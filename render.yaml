@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: nft-mint-webhook
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: ALCHEMY_SIGNING_KEY
+        sync: false
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
