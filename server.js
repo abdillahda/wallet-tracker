@@ -40,6 +40,16 @@ const NFT_API_BASE = `https://robinhood-mainnet.g.alchemy.com/nft/v3/${ALCHEMY_A
 const EXPLORER_TX_BASE = "https://robinhoodchain.blockscout.com/tx";
 
 // ---------------------------------------------------------------------------
+// BATCHING UNTUK MINT BERUNTUN
+// ---------------------------------------------------------------------------
+// Kalau ada beberapa mint dari kontrak+wallet yang sama dalam waktu singkat,
+// digabung jadi 1 pesan ringkasan alih-alih dikirim satu-satu. Timer di-reset
+// tiap ada mint baru masuk, ringkasan dikirim setelah "sepi" selama delay ini.
+const MINT_BATCH_DELAY_MS = Number(process.env.MINT_BATCH_DELAY_MS || 8000); // default 8 detik
+
+const mintBuffer = new Map(); // key: `${contractAddress}|${mintedTo}` -> { tokenIds, txHashes, collectionName, timer }
+
+// ---------------------------------------------------------------------------
 // LOAD DAFTAR WALLET YANG DIPANTAU (dari wallets.json, bukan env var)
 // ---------------------------------------------------------------------------
 // Format wallets.json mendukung 2 bentuk per entry:
@@ -91,11 +101,16 @@ function loadWallets() {
 
 loadWallets();
 
-/** Ambil label tampilan untuk sebuah address: nama custom kalau ada, else raw address. */
+/** Ambil label tampilan untuk sebuah address: "Nama (0xabcd...wxyz)" kalau ada
+ * nama custom, atau alamat penuh kalau tidak ada nama. */
 function walletLabel(address) {
   if (!address) return "-";
   const lower = address.toLowerCase();
-  return WALLET_NAMES[lower] || address;
+  const name = WALLET_NAMES[lower];
+  if (!name) return address;
+
+  const shortAddr = `${address.slice(0, 6)}...${address.slice(-4)}`;
+  return `${name} (${shortAddr})`;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +163,7 @@ function isMintEvent(fromAddress) {
  */
 async function fetchNftInfo(contractAddress, tokenId) {
   if (!ALCHEMY_API_KEY || !contractAddress || tokenId === undefined) {
-    return { assetName: null, collectionName: null };
+    return { assetName: null, collectionName: null, openSeaSlug: null };
   }
 
   try {
@@ -156,20 +171,19 @@ async function fetchNftInfo(contractAddress, tokenId) {
     const res = await fetch(url);
     if (!res.ok) {
       console.warn(`⚠️  NFT API respon ${res.status} untuk ${contractAddress} #${tokenId}`);
-      return { assetName: null, collectionName: null };
+      return { assetName: null, collectionName: null, openSeaSlug: null };
     }
     const data = await res.json();
 
     const assetName = data?.name || data?.raw?.metadata?.name || null;
-    const collectionName =
-      data?.contract?.openSeaMetadata?.collectionName ||
-      data?.contract?.name ||
-      null;
+    const openSeaMeta = data?.contract?.openSeaMetadata;
+    const collectionName = openSeaMeta?.collectionName || data?.contract?.name || null;
+    const openSeaSlug = openSeaMeta?.collectionSlug || null;
 
-    return { assetName, collectionName };
+    return { assetName, collectionName, openSeaSlug };
   } catch (err) {
     console.warn("⚠️  Gagal fetch NFT metadata:", err.message);
-    return { assetName: null, collectionName: null };
+    return { assetName: null, collectionName: null, openSeaSlug: null };
   }
 }
 
@@ -191,27 +205,88 @@ async function sendDiscordMessage(content) {
 }
 
 async function handleMintDetected({ contractAddress, tokenId, mintedTo, txHash }) {
-  const { assetName, collectionName } = await fetchNftInfo(contractAddress, tokenId);
-  const asset = assetName || `Token ID ${tokenId}`;
-  const mintedFromLabel = walletLabel(mintedTo);
-  const txUrl = `${EXPLORER_TX_BASE}/${txHash}`;
+  const { assetName, collectionName, openSeaSlug } = await fetchNftInfo(contractAddress, tokenId);
 
-  console.log("🎨 MINT TERDETEKSI!");
+  console.log("🎨 MINT TERDETEKSI (masuk buffer)");
   console.log(`   Contract     : ${contractAddress}`);
-  console.log(`   Asset        : ${asset}`);
-  console.log(`   Minted from  : ${mintedFromLabel}`);
-  console.log(`   Tx           : ${txUrl}`);
-  console.log(`   Collection   : ${collectionName || "-"}`);
+  console.log(`   Token ID     : ${tokenId}`);
+  console.log(`   Minted from  : ${walletLabel(mintedTo)}`);
+  console.log(`   Tx           : ${EXPLORER_TX_BASE}/${txHash}`);
   console.log("----------------------------------------");
 
-  const message =
-    `🎨 **Mint baru terdeteksi!**\n` +
-    `Contract : \`${contractAddress}\`\n` +
-    `Asset : \`${asset}\`\n` +
-    `Minted from : \`${mintedFromLabel}\`\n` +
-    `Tx : ${txUrl}\n` +
-    `Collection : \`${collectionName || "-"}\``;
+  const key = `${contractAddress}|${mintedTo}`;
 
+  if (!mintBuffer.has(key)) {
+    mintBuffer.set(key, {
+      contractAddress,
+      mintedTo,
+      collectionName,
+      openSeaSlug,
+      tokenIds: [],
+      txHashes: new Set(),
+      timer: null,
+    });
+  }
+
+  const entry = mintBuffer.get(key);
+  entry.tokenIds.push(assetName || `#${tokenId}`);
+  entry.txHashes.add(txHash);
+  if (!entry.collectionName && collectionName) entry.collectionName = collectionName;
+  if (!entry.openSeaSlug && openSeaSlug) entry.openSeaSlug = openSeaSlug;
+
+  // Reset timer setiap ada mint baru masuk untuk key yang sama.
+  // Ringkasan baru dikirim setelah tidak ada mint baru selama MINT_BATCH_DELAY_MS.
+  if (entry.timer) clearTimeout(entry.timer);
+  entry.timer = setTimeout(() => flushMintBuffer(key), MINT_BATCH_DELAY_MS);
+}
+
+async function flushMintBuffer(key) {
+  const entry = mintBuffer.get(key);
+  if (!entry) return;
+  mintBuffer.delete(key);
+
+  const mintedFromLabel = walletLabel(entry.mintedTo);
+  const count = entry.tokenIds.length;
+  const txLinks = [...entry.txHashes].map((h) => `${EXPLORER_TX_BASE}/${h}`);
+  const openSeaLine = entry.openSeaSlug
+    ? `\nOpenSea : https://opensea.io/collection/${entry.openSeaSlug}`
+    : "";
+
+  let message;
+
+  if (count === 1) {
+    // Cuma 1 mint -> format seperti biasa
+    message =
+      `🎨 **Mint baru terdeteksi!**\n` +
+      `Contract : \`${entry.contractAddress}\`\n` +
+      `Asset : \`${entry.tokenIds[0]}\`\n` +
+      `Minted from : \`${mintedFromLabel}\`\n` +
+      `Tx : ${txLinks[0]}\n` +
+      `Collection : \`${entry.collectionName || "-"}\`` +
+      openSeaLine;
+  } else {
+    // Lebih dari 1 mint beruntun -> gabung jadi ringkasan
+    const MAX_LISTED = 15;
+    const listedTokens = entry.tokenIds.slice(0, MAX_LISTED).join(", ");
+    const extra = count > MAX_LISTED ? ` (+${count - MAX_LISTED} lagi)` : "";
+
+    const txText =
+      txLinks.length === 1
+        ? txLinks[0]
+        : txLinks.map((l, i) => `[Tx ${i + 1}](${l})`).join(", ");
+
+    message =
+      `🎨 **${count}x Mint baru terdeteksi!**\n` +
+      `Contract : \`${entry.contractAddress}\`\n` +
+      `Collection : \`${entry.collectionName || "-"}\`\n` +
+      `Minted from : \`${mintedFromLabel}\`\n` +
+      `Total Minted : ${count}\n` +
+      `Assets : ${listedTokens}${extra}\n` +
+      `Tx : ${txText}` +
+      openSeaLine;
+  }
+
+  console.log(`📬 Mengirim ringkasan mint (${count}x) untuk key ${key}`);
   await sendDiscordMessage(message);
 }
 
@@ -233,11 +308,13 @@ async function handleWalletActivityDetected({
 
   let asset = contractAddress || "-";
   let collectionName = null;
+  let openSeaSlug = null;
 
   if (isNft) {
     const info = await fetchNftInfo(contractAddress, tokenId);
     asset = info.assetName || `Token ID ${tokenId}`;
     collectionName = info.collectionName;
+    openSeaSlug = info.openSeaSlug;
   }
 
   console.log(`${directionEmoji} ${isNft ? "NFT" : "TOKEN"} ${direction} TERDETEKSI (wallet: ${watchedLabel})`);
@@ -257,7 +334,8 @@ async function handleWalletActivityDetected({
     `From : \`${walletLabel(fromAddress)}\`\n` +
     `To : \`${walletLabel(toAddress)}\`\n` +
     `Tx : ${txUrl}` +
-    (collectionName ? `\nCollection : \`${collectionName}\`` : "");
+    (collectionName ? `\nCollection : \`${collectionName}\`` : "") +
+    (openSeaSlug ? `\nOpenSea : https://opensea.io/collection/${openSeaSlug}` : "");
 
   await sendDiscordMessage(message);
 }
