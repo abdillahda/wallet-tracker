@@ -1,0 +1,10 @@
+{
+  "_comment": "Daftar wallet yang dipantau. Bisa isi 'address' saja (string), atau { address, name } kalau mau tampilan custom di notifikasi. Tambah/hapus baris di sini, lalu commit & push - Render redeploy otomatis. Tidak ada batas jumlah (bisa lebih dari 10).",
+  "wallets": [
+    { "address": "0x334645c67d2729bdac80866ea40f924b6a21d73d", "name": "Wallet 1" },
+    { "address": "0xf05692062c74022157c209ad4c5d0e2c9940b435", "name": "peaceofheaven" },
+    { "address": "0x3d76da74e3fa2b79975e2bc077fe1847996bfcd6", "name": "stress abim" },
+    { "address": "0x70e0969edebbc2f50289f527e98a572114693246", "name": "ej1" },
+    { "address": "0x9aa4d06af3a2859f6abd6cf98934dbdc7f7d1a65", "name": "OS Gacor" }
+  ]
+}
