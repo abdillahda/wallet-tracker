@@ -25,6 +25,11 @@ const SIGNING_KEY = process.env.ALCHEMY_SIGNING_KEY; // Alchemy Dashboard > Noti
 const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY; // Alchemy Dashboard > App kamu > API Key (beda dari signing key!)
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
+// Kalau true, notifikasi juga dikirim untuk aktivitas wallet selain mint
+// (transfer masuk/keluar token & NFT). Set ke "true" di env var kalau mau
+// diaktifkan lagi nanti. Default: false -> cuma notif MINT yang dikirim.
+const TRACK_WALLET_ACTIVITY = process.env.TRACK_WALLET_ACTIVITY === "true";
+
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 // Base URL NFT API Alchemy untuk Robinhood Chain mainnet.
@@ -283,6 +288,9 @@ async function processActivities(activities) {
     }
 
     // Kasus 2: aktivitas wallet yang dipantau (incoming/outgoing, NFT atau token)
+    // Hanya diproses kalau TRACK_WALLET_ACTIVITY diaktifkan.
+    if (!TRACK_WALLET_ACTIVITY) continue;
+
     const isFromWatched = WATCHED_WALLETS.includes(fromAddress);
     const isToWatched = WATCHED_WALLETS.includes(toAddress);
 
