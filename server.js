@@ -29,10 +29,14 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 // Isi dengan Role ID (angka panjang), kosongkan kalau tidak mau tag siapa-siapa.
 const DISCORD_ROLE_ID = process.env.DISCORD_ROLE_ID || "";
 
-// Kalau true, notifikasi juga dikirim untuk aktivitas wallet selain mint
-// (transfer masuk/keluar token & NFT). Set ke "true" di env var kalau mau
-// diaktifkan lagi nanti. Default: false -> cuma notif MINT yang dikirim.
-const TRACK_WALLET_ACTIVITY = process.env.TRACK_WALLET_ACTIVITY === "true";
+// Discord webhook URL KHUSUS untuk notifikasi NFT buy/sell (beda channel dari mint).
+// Kalau kosong, fallback ke DISCORD_WEBHOOK_URL yang sama (jadi 1 channel saja).
+const DISCORD_TRADES_WEBHOOK_URL = process.env.DISCORD_TRADES_WEBHOOK_URL || DISCORD_WEBHOOK_URL;
+
+// Kalau true, notifikasi buy/sell NFT dikirim (transfer masuk/keluar wallet
+// dipantau, khusus NFT — token/USDC biasa di-skip). Default: true, karena ini
+// memang fitur yang mau dipakai untuk deteksi buy/sell.
+const TRACK_WALLET_ACTIVITY = process.env.TRACK_WALLET_ACTIVITY !== "false";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
@@ -195,13 +199,13 @@ async function fetchNftInfo(contractAddress, tokenId) {
 // DISCORD NOTIFICATIONS
 // ---------------------------------------------------------------------------
 
-async function sendDiscordMessage(content) {
-  if (!DISCORD_WEBHOOK_URL) return;
+async function sendDiscordMessage(content, webhookUrl = DISCORD_WEBHOOK_URL) {
+  if (!webhookUrl) return;
 
   const rolePrefix = DISCORD_ROLE_ID ? `<@&${DISCORD_ROLE_ID}> ` : "";
 
   try {
-    await fetch(DISCORD_WEBHOOK_URL, {
+    await fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -314,22 +318,18 @@ async function handleWalletActivityDetected({
   txHash,
 }) {
   const watchedLabel = walletLabel(watchedWallet);
-  const directionEmoji = direction === "OUTGOING" ? "📤" : "📥";
-  const directionText = direction === "OUTGOING" ? "keluar dari" : "masuk ke";
+  // OUTGOING (NFT keluar dari watched wallet) = indikasi SELL
+  // INCOMING (NFT masuk ke watched wallet) = indikasi BUY
+  const isSell = direction === "OUTGOING";
+  const label = isSell ? "SELL" : "BUY";
+  const emoji = isSell ? "🔴" : "🟢";
+  const actionText = isSell ? "menjual" : "membeli";
   const txUrl = `${EXPLORER_TX_BASE}/${txHash}`;
 
-  let asset = contractAddress || "-";
-  let collectionName = null;
-  let openSeaSlug = null;
+  const { assetName, collectionName, openSeaSlug } = await fetchNftInfo(contractAddress, tokenId);
+  const asset = assetName || `Token ID ${tokenId}`;
 
-  if (isNft) {
-    const info = await fetchNftInfo(contractAddress, tokenId);
-    asset = info.assetName || `Token ID ${tokenId}`;
-    collectionName = info.collectionName;
-    openSeaSlug = info.openSeaSlug;
-  }
-
-  console.log(`${directionEmoji} ${isNft ? "NFT" : "TOKEN"} ${direction} TERDETEKSI (wallet: ${watchedLabel})`);
+  console.log(`${emoji} NFT ${label} TERDETEKSI (wallet: ${watchedLabel})`);
   console.log(`   Contract : ${contractAddress}`);
   console.log(`   Asset    : ${asset}`);
   console.log(`   From     : ${walletLabel(fromAddress)}`);
@@ -339,17 +339,17 @@ async function handleWalletActivityDetected({
   console.log("----------------------------------------");
 
   const message =
-    `${directionEmoji} **${isNft ? "NFT" : "Token"} ${directionText} wallet dipantau!**\n` +
+    `${emoji} **Kemungkinan ${actionText} NFT!**\n` +
     `Wallet : \`${watchedLabel}\`\n` +
     `Contract : \`${contractAddress}\`\n` +
-    `Asset : \`${asset}\`${!isNft ? ` (value: ${value})` : ""}\n` +
+    `Asset : \`${asset}\`\n` +
     `From : \`${walletLabel(fromAddress)}\`\n` +
     `To : \`${walletLabel(toAddress)}\`\n` +
     `Tx : ${txUrl}` +
     (collectionName ? `\nCollection : \`${collectionName}\`` : "") +
     (openSeaSlug ? `\nOpenSea : https://opensea.io/collection/${openSeaSlug}` : "");
 
-  await sendDiscordMessage(message);
+  await sendDiscordMessage(message, DISCORD_TRADES_WEBHOOK_URL);
 }
 
 // ---------------------------------------------------------------------------
@@ -377,15 +377,15 @@ async function processActivities(activities) {
       continue;
     }
 
-    // Kasus 2: aktivitas wallet yang dipantau (incoming/outgoing, NFT atau token)
-    // Hanya diproses kalau TRACK_WALLET_ACTIVITY diaktifkan.
-    if (!TRACK_WALLET_ACTIVITY) continue;
+    // Kasus 2: NFT masuk/keluar dari wallet yang dipantau (indikasi buy/sell).
+    // Token/USDC biasa (bukan NFT) di-skip karena fokusnya cuma NFT.
+    if (!TRACK_WALLET_ACTIVITY || !isNft) continue;
 
     const isFromWatched = WATCHED_WALLETS.includes(fromAddress);
     const isToWatched = WATCHED_WALLETS.includes(toAddress);
 
     if (!isFromWatched && !isToWatched) {
-      console.log(`ℹ️  Aktivitas diabaikan (bukan watched wallet) — from: ${fromAddress}, to: ${toAddress}`);
+      console.log(`ℹ️  Aktivitas NFT diabaikan (bukan watched wallet) — from: ${fromAddress}, to: ${toAddress}`);
       continue;
     }
 
