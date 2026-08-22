@@ -6,5 +6,6 @@
     { "address": "0x3d76da74e3fa2b79975e2bc077fe1847996bfcd6", "name": "stress abim" },
     { "address": "0x70e0969edebbc2f50289f527e98a572114693246", "name": "ej1" },
     { "address": "0x9aa4d06af3a2859f6abd6cf98934dbdc7f7d1a65", "name": "OS Gacor" }
+    { "address": "0x00179a311d6b239f2d367372b0dd7799946e6ab6", "name": "Test wallet" }
   ]
 }
