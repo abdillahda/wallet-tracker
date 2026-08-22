@@ -25,6 +25,10 @@ const SIGNING_KEY = process.env.ALCHEMY_SIGNING_KEY; // Alchemy Dashboard > Noti
 const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY; // Alchemy Dashboard > App kamu > API Key (beda dari signing key!)
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
+// (Opsional) Role Discord yang mau di-tag/ping tiap ada notifikasi.
+// Isi dengan Role ID (angka panjang), kosongkan kalau tidak mau tag siapa-siapa.
+const DISCORD_ROLE_ID = process.env.DISCORD_ROLE_ID || "";
+
 // Kalau true, notifikasi juga dikirim untuk aktivitas wallet selain mint
 // (transfer masuk/keluar token & NFT). Set ke "true" di env var kalau mau
 // diaktifkan lagi nanti. Default: false -> cuma notif MINT yang dikirim.
@@ -193,11 +197,19 @@ async function fetchNftInfo(contractAddress, tokenId) {
 
 async function sendDiscordMessage(content) {
   if (!DISCORD_WEBHOOK_URL) return;
+
+  const rolePrefix = DISCORD_ROLE_ID ? `<@&${DISCORD_ROLE_ID}> ` : "";
+
   try {
     await fetch(DISCORD_WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({
+        content: rolePrefix + content,
+        // allowed_mentions eksplisit supaya role benar-benar ke-notif (ping),
+        // bukan cuma teks <@&ID> yang tampil sebagai teks biasa.
+        allowed_mentions: { parse: ["roles"] },
+      }),
     });
   } catch (err) {
     console.error("Gagal kirim notifikasi Discord:", err);
