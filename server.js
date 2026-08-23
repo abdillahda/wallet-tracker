@@ -53,6 +53,7 @@ const CHAINS = {
     discordTradesWebhookUrl: DISCORD_TRADES_WEBHOOK_URL,
     nftApiBase: `https://robinhood-mainnet.g.alchemy.com/nft/v3/${ALCHEMY_API_KEY}`,
     explorerTxBase: "https://robinhoodchain.blockscout.com/tx",
+    openSeaBase: "https://opensea.io/collection",
     walletsFile: "wallets.json",
   },
   ink: {
@@ -62,6 +63,7 @@ const CHAINS = {
     // ALCHEMY_API_KEY_INK opsional -- kalau kosong, fallback pakai API key yang sama
     nftApiBase: `https://ink-mainnet.g.alchemy.com/nft/v3/${process.env.ALCHEMY_API_KEY_INK || ALCHEMY_API_KEY}`,
     explorerTxBase: "https://explorer.inkonchain.com/tx",
+    openSeaBase: "https://opensea.io/collection",
     walletsFile: "wallets-ink.json",
   },
 };
@@ -288,7 +290,7 @@ async function flushMintBuffer(key) {
   const count = entry.tokenIds.length;
   const txLinks = [...entry.txHashes].map((h) => `${chainConfig.explorerTxBase}/${h}`);
   const openSeaLine = entry.openSeaSlug
-    ? `\nOpenSea : https://opensea.io/collection/${entry.openSeaSlug}`
+    ? `\nOpenSea : ${chainConfig.openSeaBase}/${entry.openSeaSlug}`
     : "";
 
   let message;
@@ -372,7 +374,7 @@ async function handleWalletActivityDetected({
     `To : \`${walletLabel(chain, toAddress)}\`\n` +
     `Tx : ${txUrl}` +
     (collectionName ? `\nCollection : \`${collectionName}\`` : "") +
-    (openSeaSlug ? `\nOpenSea : https://opensea.io/collection/${openSeaSlug}` : "");
+    (openSeaSlug ? `\nOpenSea : ${chainConfig.openSeaBase}/${openSeaSlug}` : "");
 
   await sendDiscordMessage(message, chainConfig.discordTradesWebhookUrl);
 }
