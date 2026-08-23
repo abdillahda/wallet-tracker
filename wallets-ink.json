@@ -1,0 +1,12 @@
+{
+  "_comment": "Daftar wallet yang dipantau KHUSUS untuk chain Ink. Terpisah dari wallets.json (Robinhood Chain). Format sama: bisa string biasa atau { address, name }.",
+  "wallets": [
+    { "address": "0x272236e395acab88053b205f8f96da7cc84b24a7", "name": "Wallet 1" },
+    { "address": "0x0ddf48bb536d1e43e67dbabe3e4e5e087feab294", "name": "Wallet 2" },
+    { "address": "0xb9b031325c39c2209faf51bea23899c231fbf25e", "name": "Wallet 3" },
+    { "address": "0x5d0f1c966c8df84af0d618f305fd2febb42940fb", "name": "Wallet 4" },
+    { "address": "0xcd4052e67ac01de9dc577ffc555550599150f3dc", "name": "Wallet 5" }
+    { "address": "0x46246d6a7ac1e9892fe9dd3750c13feccf65d775", "name": "Wallet 6" }
+    { "address": "0xdd938520abe95789533c673d7ce07a98dd922a97", "name": "Wallet 7" }
+  ]
+}
