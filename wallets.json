@@ -7,5 +7,10 @@
     { "address": "0x70e0969edebbc2f50289f527e98a572114693246", "name": "ej1" },
     { "address": "0x9aa4d06af3a2859f6abd6cf98934dbdc7f7d1a65", "name": "OS Gacor" }
     { "address": "0x00179a311d6b239f2d367372b0dd7799946e6ab6", "name": "Test wallet" }
+    { "address": "0x2902b141ab0552af86b105ab8ad6d66483a1fcd1", "name": "Stress Rendy" }
+    { "address": "0xab3246f849066b7fbb8ba59ab538f2aa4620e9f0", "name": "Stress Mahen" }
+    { "address": "0x2ec43e6f78cd561e87f0de3c24d24e11575634d3", "name": "Stress Bondan" }
+    { "address": "0x125fa436f2074c2f51ba38d88ef09b00ae59360e", "name": "Stress Nousagi" }
+    { "address": "0x657b562c430ea78ab33efb34f86edd1e51a2d30c", "name": "Stress Chihiro" }
   ]
 }
