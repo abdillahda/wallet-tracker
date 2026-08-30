@@ -33,6 +33,13 @@ const DISCORD_ROLE_ID = process.env.DISCORD_ROLE_ID || "";
 // Kalau kosong, fallback ke DISCORD_WEBHOOK_URL yang sama (jadi 1 channel saja).
 const DISCORD_TRADES_WEBHOOK_URL = process.env.DISCORD_TRADES_WEBHOOK_URL || DISCORD_WEBHOOK_URL;
 
+// Discord webhook URL KHUSUS untuk ringkasan (summary) transaksi berkala.
+// Kalau kosong, fallback ke DISCORD_WEBHOOK_URL yang sama.
+const DISCORD_SUMMARY_WEBHOOK_URL = process.env.DISCORD_SUMMARY_WEBHOOK_URL || DISCORD_WEBHOOK_URL;
+
+// Interval pengiriman ringkasan transaksi (default 15 menit).
+const SUMMARY_INTERVAL_MS = Number(process.env.SUMMARY_INTERVAL_MS || 15 * 60 * 1000);
+
 // Kalau true, notifikasi buy/sell NFT dikirim (transfer masuk/keluar wallet
 // dipantau, khusus NFT — token/USDC biasa di-skip). Default: true, karena ini
 // memang fitur yang mau dipakai untuk deteksi buy/sell.
@@ -56,6 +63,75 @@ const EXPLORER_TX_BASE = "https://robinhoodchain.blockscout.com/tx";
 const MINT_BATCH_DELAY_MS = Number(process.env.MINT_BATCH_DELAY_MS || 8000); // default 8 detik
 
 const mintBuffer = new Map(); // key: `${contractAddress}|${mintedTo}` -> { tokenIds, txHashes, collectionName, timer }
+
+// ---------------------------------------------------------------------------
+// BUFFER UNTUK SUMMARY TRANSAKSI BERKALA (buy/sell per collection, tiap 15 menit)
+// ---------------------------------------------------------------------------
+// Ini buffer TERPISAH dari mintBuffer & tidak mengubah alur notifikasi
+// buy/sell real-time yang sudah ada. Cuma "mencatat" setiap kejadian buy/sell
+// supaya bisa diringkas & dikirim berkala oleh flushSummaryBuffer().
+//
+// key: nama collection (atau contract address kalau nama tidak diketahui)
+// value: { buyCount, sellCount, buyWallets: Set, sellWallets: Set }
+const summaryBuffer = new Map();
+
+function recordTransactionForSummary({ collectionKey, isSell, watchedLabel }) {
+  if (!summaryBuffer.has(collectionKey)) {
+    summaryBuffer.set(collectionKey, {
+      buyCount: 0,
+      sellCount: 0,
+      buyWallets: new Set(),
+      sellWallets: new Set(),
+    });
+  }
+
+  const entry = summaryBuffer.get(collectionKey);
+  if (isSell) {
+    entry.sellCount += 1;
+    entry.sellWallets.add(watchedLabel);
+  } else {
+    entry.buyCount += 1;
+    entry.buyWallets.add(watchedLabel);
+  }
+}
+
+async function flushSummaryBuffer() {
+  if (summaryBuffer.size === 0) {
+    console.log("📊 Tidak ada transaksi dalam periode ini, kirim summary kosong.");
+    await sendDiscordMessage(
+      "📊 **Summary Transaksi (15 menit terakhir)**\nTidak ada aktivitas transaksi dalam periode ini.",
+      DISCORD_SUMMARY_WEBHOOK_URL
+    );
+    return;
+  }
+
+  const sections = [];
+  for (const [collectionKey, entry] of summaryBuffer.entries()) {
+    const buyWalletsText = entry.buyWallets.size > 0 ? [...entry.buyWallets].join(", ") : "-";
+    const sellWalletsText = entry.sellWallets.size > 0 ? [...entry.sellWallets].join(", ") : "-";
+
+    sections.push(
+      `🖼️ **${collectionKey}**\n` +
+        `🟢 Buy: ${entry.buyCount}x — Wallet: ${buyWalletsText}\n` +
+        `🔴 Sell: ${entry.sellCount}x — Wallet: ${sellWalletsText}`
+    );
+  }
+
+  const message = `📊 **Summary Transaksi (15 menit terakhir)**\n\n${sections.join("\n\n")}`;
+
+  console.log(`📊 Mengirim summary transaksi (${summaryBuffer.size} collection).`);
+  summaryBuffer.clear();
+
+  await sendDiscordMessage(message, DISCORD_SUMMARY_WEBHOOK_URL);
+}
+
+// Jadwalkan pengiriman summary berkala. Tidak mengganggu timer mint (MINT_BATCH_DELAY_MS)
+// karena ini interval terpisah.
+setInterval(() => {
+  flushSummaryBuffer().catch((err) => {
+    console.error("Gagal mengirim summary transaksi:", err);
+  });
+}, SUMMARY_INTERVAL_MS);
 
 // ---------------------------------------------------------------------------
 // LOAD DAFTAR WALLET YANG DIPANTAU (dari wallets.json, bukan env var)
@@ -337,6 +413,10 @@ async function handleWalletActivityDetected({
   console.log(`   Tx       : ${txUrl}`);
   if (collectionName) console.log(`   Collection: ${collectionName}`);
   console.log("----------------------------------------");
+
+  // Catat transaksi ini untuk ringkasan berkala (tidak memengaruhi notifikasi di bawah).
+  const collectionKey = collectionName || contractAddress;
+  recordTransactionForSummary({ collectionKey, isSell, watchedLabel });
 
   const message =
     `${emoji} **Kemungkinan ${actionText} NFT!**\n` +
