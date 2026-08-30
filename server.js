@@ -16,10 +16,15 @@ const express = require("express");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const multer = require("multer"); // untuk handle upload file (.txt bulk address)
 require("dotenv").config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Multer disimpan di memory (bukan disk) karena file yang diupload cuma daftar
+// address (kecil), langsung diproses lalu dibuang.
+const upload = multer({ storage: multer.memoryStorage() });
 
 const SIGNING_KEY = process.env.ALCHEMY_SIGNING_KEY; // Alchemy Dashboard > Notify > webhook detail > Signing Key
 const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY; // Alchemy Dashboard > App kamu > API Key (beda dari signing key!)
@@ -65,6 +70,26 @@ const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 // Base URL NFT API Alchemy untuk Robinhood Chain mainnet.
 // Kalau kamu pakai testnet, ganti "robinhood-mainnet" -> "robinhood-testnet".
 const NFT_API_BASE = `https://robinhood-mainnet.g.alchemy.com/nft/v3/${ALCHEMY_API_KEY}`;
+
+// Base URL JSON-RPC Alchemy (dipakai untuk cek apakah suatu transaksi benar-benar
+// ada pembayaran/payment, bukan sekadar transfer NFT biasa).
+const RPC_API_BASE = `https://robinhood-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}`;
+
+// Kalau true (default), notifikasi BUY/SELL hanya dikirim jika transaksi tersebut
+// benar-benar ada pembayaran (native value atau transfer token ERC20 seperti
+// WETH/USDC) yang menyertai NFT dalam transaksi yang sama. Transfer NFT biasa
+// (hibah/airdrop/kirim manual tanpa pembayaran) akan di-skip, tidak dianggap buy/sell.
+const TRACK_ONLY_REAL_TRADES = process.env.TRACK_ONLY_REAL_TRADES !== "false";
+
+// --- Alchemy Notify API (untuk bulk-add address ke webhook Address Activity) ---
+// BEDA dari ALCHEMY_API_KEY (dipakai untuk NFT API & RPC). Auth Token ini
+// didapat dari Alchemy Dashboard > Notify > (klik ikon gear/settings) > Auth Token.
+const ALCHEMY_AUTH_TOKEN = process.env.ALCHEMY_AUTH_TOKEN || "";
+
+// ID webhook Address Activity yang sudah dibuat di Alchemy Dashboard (bukan
+// signing key, bukan URL webhook — ini ID unik webhook, terlihat di dashboard
+// atau lewat endpoint "get all webhooks" punya Alchemy).
+const ALCHEMY_WEBHOOK_ID = process.env.ALCHEMY_WEBHOOK_ID || "";
 
 // Block explorer untuk link transaksi di notifikasi.
 const EXPLORER_TX_BASE = "https://robinhoodchain.blockscout.com/tx";
@@ -257,6 +282,130 @@ function loadWallets() {
 
 loadWallets();
 
+// ---------------------------------------------------------------------------
+// BULK ADD WALLET DARI FILE .TXT (1 address per baris, nama opsional)
+// ---------------------------------------------------------------------------
+// Dipakai oleh endpoint POST /admin/bulk-add-wallets. Alur:
+//   1. Parse isi file .txt -> daftar { address, name } valid
+//      Format tiap baris: "0xAddress" ATAU "0xAddress,Nama Wallet"
+//   2. Tambahkan (append, bukan replace) address baru ke wallets.json lokal
+//   3. Push address baru itu ke Alchemy webhook (Notify API) supaya Alchemy
+//      juga mulai mengirim event untuk wallet tersebut
+// Address yang sudah ada sebelumnya (di wallets.json ATAU sudah pernah dikirim)
+// otomatis di-skip dari kedua proses di atas (idempotent, aman dipanggil ulang).
+
+const EVM_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
+
+/** Parse isi file .txt -> array { address, name } valid (address lowercase).
+ * Format tiap baris: "0xAddress" atau "0xAddress,Nama Wallet" (nama opsional).
+ * Baris kosong, komentar ("#..."), dan address dengan format tidak valid diabaikan. */
+function parseAddressesFromTxt(fileBuffer) {
+  const lines = fileBuffer.toString("utf-8").split(/\r?\n/);
+  const valid = [];
+  const invalid = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue; // skip baris kosong/komentar
+
+    // Pisahkan address & nama pakai koma pertama saja (biar nama boleh ada koma juga).
+    const commaIndex = line.indexOf(",");
+    const addrPart = (commaIndex === -1 ? line : line.slice(0, commaIndex)).trim();
+    const namePart = commaIndex === -1 ? "" : line.slice(commaIndex + 1).trim();
+
+    const addr = addrPart.toLowerCase();
+    if (EVM_ADDRESS_REGEX.test(addr)) {
+      valid.push({ address: addr, name: namePart || undefined });
+    } else {
+      invalid.push(line);
+    }
+  }
+
+  return { valid, invalid };
+}
+
+/** Tambahkan (append) address baru ke wallets.json lokal, skip yang sudah ada.
+ * Input: array { address, name } (dari parseAddressesFromTxt).
+ * Return daftar address (string) yang benar-benar baru ditambahkan. */
+function appendAddressesToWalletsFile(newEntries) {
+  const filePath = path.join(__dirname, "wallets.json");
+
+  let parsed = { wallets: [] };
+  try {
+    const raw = fs.readFileSync(filePath, "utf-8");
+    parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed.wallets)) parsed.wallets = [];
+  } catch (err) {
+    console.warn("⚠️  wallets.json tidak ditemukan/invalid, akan dibuat baru.");
+    parsed = { wallets: [] };
+  }
+
+  // Kumpulkan address yang sudah ada (baik bentuk string maupun object).
+  const existing = new Set(
+    parsed.wallets.map((entry) =>
+      (typeof entry === "string" ? entry : entry?.address || "").trim().toLowerCase()
+    )
+  );
+
+  const addedAddresses = [];
+  for (const { address, name } of newEntries) {
+    if (!existing.has(address)) {
+      // Kalau ada nama -> simpan sebagai object { address, name }.
+      // Kalau tidak ada nama -> simpan sebagai string polos (konsisten dengan format lama).
+      parsed.wallets.push(name ? { address, name } : address);
+      existing.add(address);
+      addedAddresses.push(address);
+    }
+  }
+
+  if (addedAddresses.length > 0) {
+    fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2), "utf-8");
+  }
+
+  return addedAddresses;
+}
+
+/** Push address baru ke Alchemy webhook (Notify API) via endpoint
+ * update-webhook-addresses, mode APPEND (addresses_to_add), bukan replace.
+ * Otomatis dibagi per 500 address per request (limit dari Alchemy). */
+async function addAddressesToAlchemyWebhook(addresses) {
+  if (!ALCHEMY_AUTH_TOKEN || !ALCHEMY_WEBHOOK_ID) {
+    throw new Error(
+      "ALCHEMY_AUTH_TOKEN atau ALCHEMY_WEBHOOK_ID belum diisi di .env — tidak bisa push ke Alchemy."
+    );
+  }
+  if (addresses.length === 0) return { pushed: 0 };
+
+  const BATCH_SIZE = 500;
+  let pushed = 0;
+
+  for (let i = 0; i < addresses.length; i += BATCH_SIZE) {
+    const batch = addresses.slice(i, i + BATCH_SIZE);
+
+    const res = await fetch("https://dashboard.alchemy.com/api/update-webhook-addresses", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Alchemy-Token": ALCHEMY_AUTH_TOKEN,
+      },
+      body: JSON.stringify({
+        webhook_id: ALCHEMY_WEBHOOK_ID,
+        addresses_to_add: batch,
+        addresses_to_remove: [],
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Alchemy API gagal (status ${res.status}): ${errText}`);
+    }
+
+    pushed += batch.length;
+  }
+
+  return { pushed };
+}
+
 /** Ambil label tampilan untuk sebuah address: "Nama (0xabcd...wxyz)" kalau ada
  * nama custom, atau alamat penuh kalau tidak ada nama. */
 function walletLabel(address) {
@@ -306,6 +455,75 @@ function isValidSignature(req) {
 
 function isMintEvent(fromAddress) {
   return fromAddress?.toLowerCase() === ZERO_ADDRESS;
+}
+
+// ---------------------------------------------------------------------------
+// CEK APAKAH TRANSAKSI BENAR-BENAR JUAL-BELI (ADA PEMBAYARAN)
+// ---------------------------------------------------------------------------
+// Webhook "Address Activity" dari Alchemy mendeteksi NFT yang berpindah wallet,
+// tapi TIDAK membedakan apakah itu hasil BELI (ada pembayaran) atau sekadar
+// transfer/hibah/airdrop biasa (tanpa pembayaran). Fungsi ini mengecek transaksi
+// (via JSON-RPC) apakah ada pembayaran yang menyertai (native value ATAU
+// transfer token ERC20 seperti WETH/USDC dalam transaksi yang sama).
+async function isRealPurchaseTx(txHash) {
+  try {
+    const [txRes, receiptRes] = await Promise.all([
+      fetch(RPC_API_BASE, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "eth_getTransactionByHash",
+          params: [txHash],
+        }),
+      }),
+      fetch(RPC_API_BASE, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "eth_getTransactionReceipt",
+          params: [txHash],
+        }),
+      }),
+    ]);
+
+    const txData = await txRes.json();
+    const nativeValueHex = txData?.result?.value;
+
+    // Kalau ada native value (ETH/token native chain) yang dikirim bersama tx ini,
+    // hampir pasti ini pembelian langsung (msg.value = harga NFT).
+    if (nativeValueHex && nativeValueHex !== "0x0" && nativeValueHex !== "0x") {
+      return true;
+    }
+
+    // Kalau native value = 0, cek log transaksi untuk transfer token ERC20
+    // (misal WETH/USDC) sebagai pembayaran — umum dipakai marketplace seperti
+    // OpenSea Seaport / Blur untuk order berbasis token, bukan native ETH.
+    const receiptData = await receiptRes.json();
+    const logs = receiptData?.result?.logs || [];
+
+    // Event signature standar: Transfer(address,address,uint256)
+    const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+    const hasErc20PaymentTransfer = logs.some((log) => {
+      if (log.topics?.[0]?.toLowerCase() !== TRANSFER_TOPIC) return false;
+      // ERC20 Transfer: 3 topics (event, from, to), value ada di "data".
+      // ERC721 Transfer: 4 topics (event, from, to, tokenId), "data" kosong ("0x").
+      const isErc20Shape = log.topics.length === 3;
+      const hasNonZeroData = log.data && log.data !== "0x";
+      return isErc20Shape && hasNonZeroData;
+    });
+
+    return hasErc20PaymentTransfer;
+  } catch (err) {
+    console.error(`Gagal cek pembayaran untuk tx ${txHash}:`, err);
+    // Kalau gagal cek (misal RPC error), fallback: anggap valid supaya
+    // notifikasi tidak hilang begitu saja karena masalah teknis sementara.
+    return true;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -474,6 +692,20 @@ async function handleWalletActivityDetected({
   const actionText = isSell ? "menjual" : "membeli";
   const txUrl = `${EXPLORER_TX_BASE}/${txHash}`;
 
+  // Filter transfer NFT biasa (hibah/airdrop/kirim manual) yang BUKAN benar-benar
+  // jual-beli — kalau tidak ada pembayaran (native value / token ERC20) yang
+  // menyertai NFT dalam transaksi yang sama, transaksi ini di-skip total
+  // (tidak dianggap BUY/SELL, tidak masuk summary/threshold, tidak kirim notif).
+  if (TRACK_ONLY_REAL_TRADES) {
+    const isRealTrade = await isRealPurchaseTx(txHash);
+    if (!isRealTrade) {
+      console.log(
+        `ℹ️  NFT ${label} diabaikan (tidak ada pembayaran terdeteksi, kemungkinan transfer/hibah biasa) — Tx: ${txUrl}`
+      );
+      return;
+    }
+  }
+
   const { assetName, collectionName, openSeaSlug } = await fetchNftInfo(contractAddress, tokenId);
   const asset = assetName || `Token ID ${tokenId}`;
 
@@ -605,6 +837,57 @@ app.get("/health", (req, res) => {
 app.post("/admin/reload-wallets", (req, res) => {
   loadWallets();
   res.status(200).json({ total: WATCHED_WALLETS.length });
+});
+
+// Bulk-add wallet dari file .txt. Format tiap baris: "0xAddress" atau
+// "0xAddress,Nama Wallet" (nama opsional). Address baru akan:
+//   1. Ditambahkan (append) ke wallets.json lokal — dengan nama kalau disertakan
+//   2. Dipush ke Alchemy webhook (Notify API), mode append/tambah (bukan replace)
+// Address yang sudah ada sebelumnya otomatis di-skip (aman dipanggil berkali-kali).
+//
+// Cara pakai (contoh dengan curl):
+//   curl -F "file=@wallets-baru.txt" http://localhost:3000/admin/bulk-add-wallets
+app.post("/admin/bulk-add-wallets", upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "File tidak ditemukan. Kirim sebagai form-data dengan field name 'file'." });
+  }
+
+  const { valid, invalid } = parseAddressesFromTxt(req.file.buffer);
+
+  if (valid.length === 0) {
+    return res.status(400).json({
+      error: "Tidak ada address valid di dalam file.",
+      invalidLines: invalid,
+    });
+  }
+
+  // Cek duplikat TERHADAP wallets.json SEBELUM ditulis, supaya kita tahu address
+  // mana saja yang benar-benar baru (dan hanya address baru itu yang dipush ke Alchemy).
+  const addedToFile = appendAddressesToWalletsFile(valid);
+
+  let alchemyResult = { pushed: 0, error: null };
+  if (addedToFile.length > 0) {
+    try {
+      const result = await addAddressesToAlchemyWebhook(addedToFile);
+      alchemyResult.pushed = result.pushed;
+    } catch (err) {
+      console.error("Gagal push address ke Alchemy:", err);
+      alchemyResult.error = err.message;
+    }
+  }
+
+  // Reload WATCHED_WALLETS in-memory supaya address baru langsung aktif tanpa restart.
+  loadWallets();
+
+  res.status(200).json({
+    totalDiFile: valid.length + invalid.length,
+    validDiFile: valid.length,
+    invalidLines: invalid, // baris yang formatnya bukan address EVM valid
+    baruDitambahkanKeWalletsJson: addedToFile.length,
+    sudahAdaSebelumnya: valid.length - addedToFile.length,
+    alchemy: alchemyResult,
+    totalWalletSekarang: WATCHED_WALLETS.length,
+  });
 });
 
 app.listen(PORT, () => {
