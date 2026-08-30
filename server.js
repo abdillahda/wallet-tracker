@@ -40,6 +40,21 @@ const DISCORD_SUMMARY_WEBHOOK_URL = process.env.DISCORD_SUMMARY_WEBHOOK_URL || D
 // Interval pengiriman ringkasan transaksi (default 15 menit).
 const SUMMARY_INTERVAL_MS = Number(process.env.SUMMARY_INTERVAL_MS || 15 * 60 * 1000);
 
+// --- Threshold Alert (deteksi "wallet compak" beli/jual di collection sama) ---
+// Discord webhook URL KHUSUS untuk alert threshold. Kalau kosong, fallback ke
+// DISCORD_SUMMARY_WEBHOOK_URL (atau DISCORD_WEBHOOK_URL kalau itu juga kosong).
+const DISCORD_THRESHOLD_WEBHOOK_URL =
+  process.env.DISCORD_THRESHOLD_WEBHOOK_URL || DISCORD_SUMMARY_WEBHOOK_URL;
+
+// Jumlah wallet unik (dari watched list) minimal yang harus transaksi (BUY atau
+// SELL, dihitung TERPISAH) pada collection yang sama dalam THRESHOLD_WINDOW_MS
+// supaya alert threshold dikirim. Default: 3 wallet.
+const THRESHOLD_WALLET_COUNT = Number(process.env.THRESHOLD_WALLET_COUNT || 3);
+
+// Rentang waktu (ms) untuk menghitung threshold di atas. Default: 5 menit.
+// Ini window TERPISAH dari SUMMARY_INTERVAL_MS (yang untuk laporan periodik).
+const THRESHOLD_WINDOW_MS = Number(process.env.THRESHOLD_WINDOW_MS || 5 * 60 * 1000);
+
 // Kalau true, notifikasi buy/sell NFT dikirim (transfer masuk/keluar wallet
 // dipantau, khusus NFT — token/USDC biasa di-skip). Default: true, karena ini
 // memang fitur yang mau dipakai untuk deteksi buy/sell.
@@ -132,6 +147,63 @@ setInterval(() => {
     console.error("Gagal mengirim summary transaksi:", err);
   });
 }, SUMMARY_INTERVAL_MS);
+
+// ---------------------------------------------------------------------------
+// THRESHOLD ALERT: deteksi wallet "compak" beli/jual di collection yang sama
+// ---------------------------------------------------------------------------
+// Beda dari summaryBuffer (laporan periodik tiap 15 menit), ini alert INSTAN
+// yang dikirim begitu jumlah wallet unik (dari watched list) yang BUY atau SELL
+// (dihitung terpisah) di 1 collection mencapai THRESHOLD_WALLET_COUNT dalam
+// rentang waktu THRESHOLD_WINDOW_MS. Tidak mengubah/menggantikan summaryBuffer.
+//
+// key: nama collection (atau contract address kalau nama tidak diketahui)
+// value: { buy: Map(walletLabel -> timestamp terakhir), sell: Map(walletLabel -> timestamp terakhir) }
+const thresholdBuffer = new Map();
+
+function pruneExpiredWallets(walletTimestampMap, windowMs) {
+  const now = Date.now();
+  for (const [wallet, ts] of walletTimestampMap.entries()) {
+    if (now - ts > windowMs) {
+      walletTimestampMap.delete(wallet);
+    }
+  }
+}
+
+async function recordAndCheckThreshold({ collectionKey, isSell, watchedLabel }) {
+  if (!thresholdBuffer.has(collectionKey)) {
+    thresholdBuffer.set(collectionKey, { buy: new Map(), sell: new Map() });
+  }
+
+  const entry = thresholdBuffer.get(collectionKey);
+  const dirMap = isSell ? entry.sell : entry.buy;
+
+  // Buang wallet yang catatannya sudah di luar window waktu.
+  pruneExpiredWallets(dirMap, THRESHOLD_WINDOW_MS);
+
+  // Catat/update timestamp wallet ini.
+  dirMap.set(watchedLabel, Date.now());
+
+  if (dirMap.size >= THRESHOLD_WALLET_COUNT) {
+    const wallets = [...dirMap.keys()];
+    const directionLabel = isSell ? "SELL" : "BUY";
+    const emoji = isSell ? "🔴" : "🟢";
+    const windowMinutes = Math.round(THRESHOLD_WINDOW_MS / 60000);
+
+    const message =
+      `🚨 **Threshold Alert!**\n` +
+      `${emoji} **${wallets.length} wallet** dari watched list melakukan **${directionLabel}** ` +
+      `pada collection **${collectionKey}** dalam ${windowMinutes} menit terakhir!\n` +
+      `Wallet: ${wallets.join(", ")}`;
+
+    console.log(`🚨 Threshold ${directionLabel} tercapai untuk collection "${collectionKey}" (${wallets.length} wallet).`);
+
+    // Reset window untuk arah (buy/sell) & collection ini setelah alert terkirim,
+    // supaya hitungan mulai dari nol lagi untuk deteksi lonjakan berikutnya.
+    dirMap.clear();
+
+    await sendDiscordMessage(message, DISCORD_THRESHOLD_WEBHOOK_URL);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // LOAD DAFTAR WALLET YANG DIPANTAU (dari wallets.json, bukan env var)
@@ -417,6 +489,11 @@ async function handleWalletActivityDetected({
   // Catat transaksi ini untuk ringkasan berkala (tidak memengaruhi notifikasi di bawah).
   const collectionKey = collectionName || contractAddress;
   recordTransactionForSummary({ collectionKey, isSell, watchedLabel });
+
+  // Cek juga apakah threshold wallet "compak" beli/jual sudah tercapai (alert instan terpisah).
+  recordAndCheckThreshold({ collectionKey, isSell, watchedLabel }).catch((err) => {
+    console.error("Gagal memproses threshold alert:", err);
+  });
 
   const message =
     `${emoji} **Kemungkinan ${actionText} NFT!**\n` +
