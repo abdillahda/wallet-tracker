@@ -14,23 +14,24 @@
     { "address": "0x657b562c430ea78ab33efb34f86edd1e51a2d30c", "name": "Stress Chihiro" },
     { "address": "0x125fa436f2074c2f51ba38d88ef09b00ae59360e", "name": "Stress nousagi" },
     { "address": "0x193e9785615916a4b0ccd025c7308351de6f1306", "name": "Stress raflesia" },
-    { "address": "0x78dbc9057209816a97a083fe69b947281a970403", "name": "Stress ge" }
-    { "address": "0xe478476d9b98c9c5b55a6067f55ab9f978ae15b3", "name": "Chillpill" }
-    { "address": "0x6cacb42dbac4cddf59d2b8513ceb8cac57e5e71e", "name": "Top Holder" }
-    { "address": "0x607ddf6975366c21082888b6815b919de66d478b", "name": "Top Holder" }
-    { "address": "0xbfaceb9808ab3b88c26ab586c09e75340e2600f4", "name": "Stress Bimo" }
-    { "address": "0xfd0d24692df090bf5b789d3bbf0b72872498f9e8", "name": "Stress Molen" }
-    { "address": "0xc7bf5d15605babd043cf586958e29c564b25f558", "name": "Stress Endvy" }
-    { "address": "0xaca1118c5678e36ad9f19e4a4e1c7989d8de869c", "name": "Stress Endvy (Burner)" }
-    { "address": "0x7dc1c9f3de49c8639b5a45c8cfb461478cf6f40c", "name": "EJ" }
-    { "address": "0x37ba6bd61f65e689bd26e9d0fa547403fafa27d1", "name": "EJ" }
-    { "address": "0x1f00b89f92990b8b3a1708a59e11397dc5af0364", "name": "Founder WIF Outlaw" }
-    { "address": "0x6cacb42dbac4cddf59d2b8513ceb8cac57e5e71e", "name": "Top Holder" }
-    { "address": "0x2e2ba3e6046119c779c6563495c9fa3d79e3a8ca", "name": "EJ" }
-    { "address": "0xcc52b687575b76771607ff5fc2160c9592270856", "name": "EJ" }
-    { "address": "0x8633237a413cf6d3c6c5340885fe73d2288cc3f8", "name": "BlueEyeOMBfund" }
-    { "address": "0x0087b8616714e74d681430bf4f9a1189965bb16f", "name": "EJ" }
-    { "address": "0xdD938520ABE95789533C673d7Ce07A98dD922A97", "name": "Shogunba" }
-    { "address": "0xe5495bbcbd9fa4cd9a386a8e47e3e157e77a2fe6", "name": "Ordi" }
+    { "address": "0x78dbc9057209816a97a083fe69b947281a970403", "name": "Stress ge" },
+    { "address": "0xe478476d9b98c9c5b55a6067f55ab9f978ae15b3", "name": "Chillpill" },
+    { "address": "0x6cacb42dbac4cddf59d2b8513ceb8cac57e5e71e", "name": "Jargon" },
+    { "address": "0x607ddf6975366c21082888b6815b919de66d478b", "name": "Top Holder" },
+    { "address": "0xbfaceb9808ab3b88c26ab586c09e75340e2600f4", "name": "Stress Bimo" },
+    { "address": "0xfd0d24692df090bf5b789d3bbf0b72872498f9e8", "name": "Stress Molen" },
+    { "address": "0xc7bf5d15605babd043cf586958e29c564b25f558", "name": "Stress Endvy" },
+    { "address": "0xaca1118c5678e36ad9f19e4a4e1c7989d8de869c", "name": "Stress Endvy (Burner)" },
+    { "address": "0x7dc1c9f3de49c8639b5a45c8cfb461478cf6f40c", "name": "EJ2" },
+    { "address": "0x37ba6bd61f65e689bd26e9d0fa547403fafa27d1", "name": "EJ3" },
+    { "address": "0x1f00b89f92990b8b3a1708a59e11397dc5af0364", "name": "Founder WIF Outlaw" },
+    { "address": "0x2e2ba3e6046119c779c6563495c9fa3d79e3a8ca", "name": "EJ4" },
+    { "address": "0xcc52b687575b76771607ff5fc2160c9592270856", "name": "EJ5" },
+    { "address": "0x8633237a413cf6d3c6c5340885fe73d2288cc3f8", "name": "BlueEyeOMBfund" },
+    { "address": "0x0087b8616714e74d681430bf4f9a1189965bb16f", "name": "EJ6" },
+    { "address": "0xdD938520ABE95789533C673d7Ce07A98dD922A97", "name": "Shogunba" },
+    { "address": "0xe5495bbcbd9fa4cd9a386a8e47e3e157e77a2fe6", "name": "Ordi" },
+    { "address": "0xaeb79cf6aa81bd82f4236913bd71df297c8f06ee", "name": "need oxygen" }
+
   ]
 }
