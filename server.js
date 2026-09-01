@@ -288,11 +288,16 @@ loadWallets();
 // Dipakai oleh endpoint POST /admin/bulk-add-wallets. Alur:
 //   1. Parse isi file .txt -> daftar { address, name } valid
 //      Format tiap baris: "0xAddress" ATAU "0xAddress,Nama Wallet"
-//   2. Tambahkan (append, bukan replace) address baru ke wallets.json lokal
-//   3. Push address baru itu ke Alchemy webhook (Notify API) supaya Alchemy
-//      juga mulai mengirim event untuk wallet tersebut
-// Address yang sudah ada sebelumnya (di wallets.json ATAU sudah pernah dikirim)
-// otomatis di-skip dari kedua proses di atas (idempotent, aman dipanggil ulang).
+//   2. Push address baru itu ke Alchemy webhook (Notify API) supaya Alchemy
+//      mulai mengirim event untuk wallet tersebut
+//
+// CATATAN PENTING: endpoint ini SENGAJA TIDAK mengubah wallets.json.
+// wallets.json di-manage manual lewat Git (commit manual), karena kalau
+// server (misal di Render tanpa persistent disk) di-restart/redeploy, file
+// lokal yang ditulis runtime akan HILANG (balik ke versi terakhir di repo).
+// Jadi alur yang benar: push ke Alchemy dulu lewat endpoint ini -> lalu
+// tambahkan address yang sama secara manual ke wallets.json -> commit & push
+// ke Git supaya WATCHED_WALLETS ikut update saat deploy berikutnya.
 
 const EVM_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
 
@@ -322,47 +327,6 @@ function parseAddressesFromTxt(fileBuffer) {
   }
 
   return { valid, invalid };
-}
-
-/** Tambahkan (append) address baru ke wallets.json lokal, skip yang sudah ada.
- * Input: array { address, name } (dari parseAddressesFromTxt).
- * Return daftar address (string) yang benar-benar baru ditambahkan. */
-function appendAddressesToWalletsFile(newEntries) {
-  const filePath = path.join(__dirname, "wallets.json");
-
-  let parsed = { wallets: [] };
-  try {
-    const raw = fs.readFileSync(filePath, "utf-8");
-    parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed.wallets)) parsed.wallets = [];
-  } catch (err) {
-    console.warn("⚠️  wallets.json tidak ditemukan/invalid, akan dibuat baru.");
-    parsed = { wallets: [] };
-  }
-
-  // Kumpulkan address yang sudah ada (baik bentuk string maupun object).
-  const existing = new Set(
-    parsed.wallets.map((entry) =>
-      (typeof entry === "string" ? entry : entry?.address || "").trim().toLowerCase()
-    )
-  );
-
-  const addedAddresses = [];
-  for (const { address, name } of newEntries) {
-    if (!existing.has(address)) {
-      // Kalau ada nama -> simpan sebagai object { address, name }.
-      // Kalau tidak ada nama -> simpan sebagai string polos (konsisten dengan format lama).
-      parsed.wallets.push(name ? { address, name } : address);
-      existing.add(address);
-      addedAddresses.push(address);
-    }
-  }
-
-  if (addedAddresses.length > 0) {
-    fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2), "utf-8");
-  }
-
-  return addedAddresses;
 }
 
 /** Push address baru ke Alchemy webhook (Notify API) via endpoint
@@ -423,8 +387,12 @@ function walletLabel(address) {
 // ---------------------------------------------------------------------------
 
 // PENTING: Alchemy menandatangani body RAW (belum di-parse JSON).
+// limit dinaikkan dari default Express (100kb) -> 5mb, karena payload webhook
+// Alchemy (terutama batch "activity" dengan banyak event sekaligus) bisa lebih
+// besar dari 100kb dan menyebabkan PayloadTooLargeError.
 app.use(
   express.json({
+    limit: "5mb",
     verify: (req, res, buf) => {
       req.rawBody = buf;
     },
@@ -840,10 +808,20 @@ app.post("/admin/reload-wallets", (req, res) => {
 });
 
 // Bulk-add wallet dari file .txt. Format tiap baris: "0xAddress" atau
-// "0xAddress,Nama Wallet" (nama opsional). Address baru akan:
-//   1. Ditambahkan (append) ke wallets.json lokal — dengan nama kalau disertakan
-//   2. Dipush ke Alchemy webhook (Notify API), mode append/tambah (bukan replace)
-// Address yang sudah ada sebelumnya otomatis di-skip (aman dipanggil berkali-kali).
+// "0xAddress,Nama Wallet" (nama opsional; nama saat ini tidak dipakai di sini,
+// hanya diparse untuk kenyamanan kalau file yang sama nanti mau kamu copy-paste
+// ke wallets.json secara manual).
+//
+// Endpoint ini HANYA push address ke Alchemy webhook (Notify API), mode
+// append/tambah (bukan replace) — TIDAK mengubah wallets.json.
+// wallets.json tetap kamu update MANUAL & commit ke Git, supaya tidak hilang
+// saat server restart/redeploy (misal di Render tanpa persistent disk) dan
+// supaya histori perubahan wallet tetap tercatat rapi di Git.
+//
+// Alur yang disarankan:
+//   1. Panggil endpoint ini dulu -> address langsung aktif dipantau Alchemy
+//   2. Tambahkan address yang sama ke wallets.json secara manual
+//   3. Commit & push ke Git -> Render auto-deploy -> WATCHED_WALLETS ikut update
 //
 // Cara pakai (contoh dengan curl):
 //   curl -F "file=@wallets-baru.txt" http://localhost:3000/admin/bulk-add-wallets
@@ -861,14 +839,24 @@ app.post("/admin/bulk-add-wallets", upload.single("file"), async (req, res) => {
     });
   }
 
-  // Cek duplikat TERHADAP wallets.json SEBELUM ditulis, supaya kita tahu address
-  // mana saja yang benar-benar baru (dan hanya address baru itu yang dipush ke Alchemy).
-  const addedToFile = appendAddressesToWalletsFile(valid);
+  // Cek terhadap WATCHED_WALLETS yang SEDANG di-load (dari wallets.json saat ini)
+  // supaya tidak push ulang address yang sudah dipantau. Ini hanya pengecekan
+  // in-memory, TIDAK menulis apapun ke wallets.json.
+  const currentSet = new Set(WATCHED_WALLETS.map((a) => a.toLowerCase()));
+  const newAddresses = [];
+  const alreadyWatched = [];
+  for (const { address } of valid) {
+    if (currentSet.has(address)) {
+      alreadyWatched.push(address);
+    } else {
+      newAddresses.push(address);
+    }
+  }
 
   let alchemyResult = { pushed: 0, error: null };
-  if (addedToFile.length > 0) {
+  if (newAddresses.length > 0) {
     try {
-      const result = await addAddressesToAlchemyWebhook(addedToFile);
+      const result = await addAddressesToAlchemyWebhook(newAddresses);
       alchemyResult.pushed = result.pushed;
     } catch (err) {
       console.error("Gagal push address ke Alchemy:", err);
@@ -876,17 +864,15 @@ app.post("/admin/bulk-add-wallets", upload.single("file"), async (req, res) => {
     }
   }
 
-  // Reload WATCHED_WALLETS in-memory supaya address baru langsung aktif tanpa restart.
-  loadWallets();
-
   res.status(200).json({
     totalDiFile: valid.length + invalid.length,
     validDiFile: valid.length,
     invalidLines: invalid, // baris yang formatnya bukan address EVM valid
-    baruDitambahkanKeWalletsJson: addedToFile.length,
-    sudahAdaSebelumnya: valid.length - addedToFile.length,
+    sudahAdaDiWatchedWallets: alreadyWatched.length,
+    dipushKeAlchemy: newAddresses.length,
     alchemy: alchemyResult,
-    totalWalletSekarang: WATCHED_WALLETS.length,
+    reminder:
+      "wallets.json TIDAK diubah otomatis. Tambahkan address di atas secara manual ke wallets.json lalu commit & push ke Git.",
   });
 });
 
