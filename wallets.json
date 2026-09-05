@@ -38,6 +38,7 @@
     { "address": "0x0822cb43a1e8966ad3721f4eaa2e1f5e2d814dd8", "name": "Stress Almostrug" },
     { "address": "0x693658afbf87aca8ae0bd91bb76017fb9d2e8331", "name": "Stress Rreol" },
     { "address": "0x6bd9270c028ab301f044b3f4972d265363caa403", "name": "Stress Dipki" },
-    { "address": "0x69af3c4a31369aa0b4ed8774129b40f7d8ae3cbf", "name": "Stress Leftcurving (Burner)" }
+    { "address": "0x69af3c4a31369aa0b4ed8774129b40f7d8ae3cbf", "name": "Stress Leftcurving (Burner)" },
+    { "address": "0xae3c8f5e1e6bcf98bcb716e7d4356ce765c69339", "name": "Stress Remahan" },
   ]
 }
