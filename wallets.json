@@ -32,5 +32,14 @@
     { "address": "0xe5495bbcbd9fa4cd9a386a8e47e3e157e77a2fe6", "name": "Ordi" },
     { "address": "0xaeb79cf6aa81bd82f4236913bd71df297c8f06ee", "name": "need oxygen" },
     { "address": "0x62bab56eb8d9a61b9e64ef083cae0e6ab5dc4bb4", "name": "EJ7" },
+    { "address": "0x1360fa27425ebc1e454e630a24338e96dd10785d", "name": "Stress Diethel" },
+    { "address": "0xae6444fcbf67b036a1c8414916ed1dc1f1589141", "name": "Stress Leftcurving" },
+    { "address": "0x0822cb43a1e8966ad3721f4eaa2e1f5e2d814dd8", "name": "Stress Almostrug" },
+    { "address": "0x693658afbf87aca8ae0bd91bb76017fb9d2e8331", "name": "Stress Rreol" },
+    { "address": "0x6bd9270c028ab301f044b3f4972d265363caa403", "name": "Stress Dipki" },
+    { "address": "0x69af3c4a31369aa0b4ed8774129b40f7d8ae3cbf", "name": "Stress Leftcurving (Burner)" },
+    { "address": "0xae3c8f5e1e6bcf98bcb716e7d4356ce765c69339", "name": "Stress Remahan" },
+    { "address": "0x7cdbbbd91258900f4184eb1a829960d7f3faf099", "name": "Stress Enola" },
+    { "address": "0xdbd47f66aa2f00b3db03397f260ce9728298c495", "name": "TMA" }
   ]
 }
