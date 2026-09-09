@@ -40,6 +40,7 @@
     { "address": "0x69af3c4a31369aa0b4ed8774129b40f7d8ae3cbf", "name": "Stress Leftcurving (Burner)" },
     { "address": "0xae3c8f5e1e6bcf98bcb716e7d4356ce765c69339", "name": "Stress Remahan" },
     { "address": "0x7cdbbbd91258900f4184eb1a829960d7f3faf099", "name": "Stress Enola" },
-    { "address": "0xdbd47f66aa2f00b3db03397f260ce9728298c495", "name": "TMA" }
+    { "address": "0xdbd47f66aa2f00b3db03397f260ce9728298c495", "name": "TMA" },
+    { "address": "0x3c926ee5e990b3999f1f656a9b18ff678ce82976", "name": "GE2" }
   ]
 }
