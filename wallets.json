@@ -41,6 +41,15 @@
     { "address": "0xae3c8f5e1e6bcf98bcb716e7d4356ce765c69339", "name": "Stress Remahan" },
     { "address": "0x7cdbbbd91258900f4184eb1a829960d7f3faf099", "name": "Stress Enola" },
     { "address": "0xdbd47f66aa2f00b3db03397f260ce9728298c495", "name": "TMA" },
-    { "address": "0x3c926ee5e990b3999f1f656a9b18ff678ce82976", "name": "GE2" }
+    { "address": "0x3c926ee5e990b3999f1f656a9b18ff678ce82976", "name": "GE2" },
+    { "address": "0x5ab2d1f5069dd2f9aeec3b0a8e923b1cdbe7fc44", "name": "Minter1" },
+    { "address": "0x01e2db782eee4d164217129922446786d73cd4c1", "name": "Minter2" },
+    { "address": "0xafa0adb782345aaa73d9341f6b5c0da0afcedec6", "name": "DegenMinter1" },
+    { "address": "0xbd8a2ca4076d1b71153f5b6200dda354ff896c76", "name": "DegenMinter2" },
+    { "address": "0xe6f46cec3b01f69d3236191772c09da58cfbeb55", "name": "DegenMinter3" },
+    { "address": "0x280256a8fedb77a95de57e4283caee8fa79df393", "name": "DegenMinter4" },
+    { "address": "0x5d1f4f1e99a9d0866be15d7300b9ac2970e232d4", "name": "DegenMinter5" },
+    { "address": "0xbc8744370bcb6d5abf5de8b4086ecfbb4c5629c3", "name": "DegenMinter6" },
+    { "address": "0x5b6c16a960f6e7b1603b3d4c420e0c0a5f6e2afb", "name": "DegenMinter7" }
   ]
 }
