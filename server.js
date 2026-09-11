@@ -91,6 +91,30 @@ const ALCHEMY_AUTH_TOKEN = process.env.ALCHEMY_AUTH_TOKEN || "";
 // atau lewat endpoint "get all webhooks" punya Alchemy).
 const ALCHEMY_WEBHOOK_ID = process.env.ALCHEMY_WEBHOOK_ID || "";
 
+// --- LP Tracking (deteksi add/remove liquidity dari watched wallet) ---
+// Discord webhook TERPISAH khusus notifikasi LP. Kalau kosong, fallback ke
+// DISCORD_WEBHOOK_URL.
+const DISCORD_LP_WEBHOOK_URL = process.env.DISCORD_LP_WEBHOOK_URL || DISCORD_WEBHOOK_URL;
+
+// Kalau true (default), sistem akan cek aktivitas mint/burn TOKEN (bukan NFT)
+// dari/ke watched wallet sebagai indikasi add/remove liquidity.
+// PENTING: fitur ini butuh webhook Alchemy di-set untuk track kategori "erc20"
+// juga (bukan cuma NFT), kalau tidak event mint/burn token tidak akan pernah masuk.
+const TRACK_LP_ACTIVITY = process.env.TRACK_LP_ACTIVITY !== "false";
+
+// Daftar contract address NFT yang di-EXCLUDE dari deteksi buy/sell, karena
+// sebenarnya bukan NFT collectible tapi representasi posisi LP (misal Uniswap v4
+// Position Manager — nambah/tarik liquidity di v4 mint/burn NFT, BUKAN jual-beli
+// NFT beneran). Default sudah include Position Manager Uniswap v4 di Robinhood
+// Chain (dari transaksi yang ditemukan). Bisa ditambah manual lewat env var,
+// dipisah koma: EXCLUDED_NFT_CONTRACTS=0xabc...,0xdef...
+const EXCLUDED_NFT_CONTRACTS = new Set(
+  [
+    "0x58daec3116aae6d93017baaea7749052e8a04fa7", // Uniswap v4 Position Manager (Robinhood Chain)
+    ...(process.env.EXCLUDED_NFT_CONTRACTS || "").split(",").map((a) => a.trim().toLowerCase()).filter(Boolean),
+  ].map((a) => a.toLowerCase())
+);
+
 // Block explorer untuk link transaksi di notifikasi.
 const EXPLORER_TX_BASE = "https://robinhoodchain.blockscout.com/tx";
 
@@ -140,7 +164,8 @@ async function flushSummaryBuffer() {
     console.log("📊 Tidak ada transaksi dalam periode ini, kirim summary kosong.");
     await sendDiscordMessage(
       "📊 **Summary Transaksi (15 menit terakhir)**\nTidak ada aktivitas transaksi dalam periode ini.",
-      DISCORD_SUMMARY_WEBHOOK_URL
+      DISCORD_SUMMARY_WEBHOOK_URL,
+      EMBED_COLOR_NEUTRAL
     );
     return;
   }
@@ -162,7 +187,7 @@ async function flushSummaryBuffer() {
   console.log(`📊 Mengirim summary transaksi (${summaryBuffer.size} collection).`);
   summaryBuffer.clear();
 
-  await sendDiscordMessage(message, DISCORD_SUMMARY_WEBHOOK_URL);
+  await sendDiscordMessage(message, DISCORD_SUMMARY_WEBHOOK_URL, EMBED_COLOR_INFO);
 }
 
 // Jadwalkan pengiriman summary berkala. Tidak mengganggu timer mint (MINT_BATCH_DELAY_MS)
@@ -226,7 +251,7 @@ async function recordAndCheckThreshold({ collectionKey, isSell, watchedLabel }) 
     // supaya hitungan mulai dari nol lagi untuk deteksi lonjakan berikutnya.
     dirMap.clear();
 
-    await sendDiscordMessage(message, DISCORD_THRESHOLD_WEBHOOK_URL);
+    await sendDiscordMessage(message, DISCORD_THRESHOLD_WEBHOOK_URL, EMBED_COLOR_ALERT);
   }
 }
 
@@ -495,6 +520,95 @@ async function isRealPurchaseTx(txHash) {
 }
 
 // ---------------------------------------------------------------------------
+// LP TRACKING: deteksi add/remove liquidity dari watched wallet
+// ---------------------------------------------------------------------------
+// Beda dari NFT: LP token/position BISA berbentuk NFT (Uniswap v4 Position
+// Manager) TAPI mayoritas AMM (Uniswap v2 & fork-nya) pakai LP token fungible
+// (ERC-20) biasa, bukan NFT. Jadi kita TIDAK mengandalkan tokenId (NFT), tapi
+// mengandalkan pola universal: mint/burn (Transfer dari/ke zero address) untuk
+// token APAPUN (NFT maupun ERC-20) yang melibatkan watched wallet.
+//
+// Supaya tidak salah tangkap (mint/burn token biasa seperti airdrop/claim/wrap
+// bukan LP), kita verifikasi lewat function selector (4 byte pertama dari
+// tx.input) — dicocokkan ke daftar fungsi yang dikenal umum dipakai buat
+// add/remove liquidity di DEX (Uniswap v2 style Router + variannya, plus
+// multicall yang biasa dipakai Router/PositionManager Uniswap v3/v4).
+//
+// Selector di bawah ini dihitung dari keccak256(function signature) asli
+// (bukan tebakan), jadi dijamin akurat untuk signature yang tercantum.
+const LP_FUNCTION_SELECTORS = {
+  "0xe8e33700": "addLiquidity",
+  "0xf305d719": "addLiquidityETH",
+  "0xbaa2abde": "removeLiquidity",
+  "0x02751cec": "removeLiquidityETH",
+  "0x2195995c": "removeLiquidityWithPermit",
+  "0xded9382a": "removeLiquidityETHWithPermit",
+  "0x6a627842": "mint (pair-level)",
+  "0x89afcb44": "burn (pair-level)",
+  "0xac9650d8": "multicall", // umum dipakai Router/PositionManager Uniswap v3/v4
+  "0x5ae401dc": "multicall (with deadline)",
+};
+
+/** Ambil function selector (4 byte pertama tx.input) dari suatu tx via RPC,
+ * lalu cocokkan ke LP_FUNCTION_SELECTORS. Return { matched, selector, functionName }. */
+async function detectLpFunctionSelector(txHash) {
+  try {
+    const res = await fetch(RPC_API_BASE, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "eth_getTransactionByHash",
+        params: [txHash],
+      }),
+    });
+    const data = await res.json();
+    const input = data?.result?.input;
+
+    if (!input || input.length < 10) {
+      return { matched: false, selector: null, functionName: null };
+    }
+
+    const selector = input.slice(0, 10).toLowerCase(); // "0x" + 8 hex char
+    const functionName = LP_FUNCTION_SELECTORS[selector];
+
+    return { matched: Boolean(functionName), selector, functionName: functionName || null };
+  } catch (err) {
+    console.error(`Gagal cek function selector untuk tx ${txHash}:`, err);
+    return { matched: false, selector: null, functionName: null };
+  }
+}
+
+async function handleLpActivityDetected({ isAdd, watchedWallet, contractAddress, txHash }) {
+  const watchedLabel = walletLabel(watchedWallet);
+  const txUrl = `${EXPLORER_TX_BASE}/${txHash}`;
+
+  const selectorCheck = await detectLpFunctionSelector(txHash);
+  if (!selectorCheck.matched) {
+    console.log(
+      `ℹ️  Mint/burn token terdeteksi tapi function selector (${selectorCheck.selector || "-"}) ` +
+        `tidak cocok pola LP yang dikenal, di-skip — Wallet: ${watchedLabel}, Tx: ${txUrl}`
+    );
+    return;
+  }
+
+  const actionLabel = isAdd ? "Menambah Liquidity" : "Menarik Liquidity";
+  const emoji = isAdd ? "🟢" : "🔴";
+
+  console.log(`${emoji} Kemungkinan ${actionLabel} terdeteksi — Wallet: ${watchedLabel}, Tx: ${txUrl}`);
+
+  const message =
+    `${emoji} **Kemungkinan ${actionLabel}!**\n` +
+    `Wallet   : ${watchedLabel}\n` +
+    `Contract (LP Token): \`${contractAddress}\`\n` +
+    `Function : ${selectorCheck.functionName} (${selectorCheck.selector})\n` +
+    `Tx       : ${txUrl}`;
+
+  await sendDiscordMessage(message, DISCORD_LP_WEBHOOK_URL, isAdd ? EMBED_COLOR_BUY : EMBED_COLOR_SELL);
+}
+
+// ---------------------------------------------------------------------------
 // NFT METADATA LOOKUP (Asset name & Collection name)
 // ---------------------------------------------------------------------------
 
@@ -533,7 +647,16 @@ async function fetchNftInfo(contractAddress, tokenId) {
 // DISCORD NOTIFICATIONS
 // ---------------------------------------------------------------------------
 
-async function sendDiscordMessage(content, webhookUrl = DISCORD_WEBHOOK_URL) {
+// Warna default embed Discord (dipakai kalau caller tidak spesifik warna).
+const EMBED_COLOR_DEFAULT = 0x5865f2; // Discord blurple
+const EMBED_COLOR_BUY = 0x2ecc71; // hijau
+const EMBED_COLOR_SELL = 0xe74c3c; // merah
+const EMBED_COLOR_MINT = 0xf1c40f; // kuning/emas
+const EMBED_COLOR_INFO = 0x3498db; // biru (summary, info umum)
+const EMBED_COLOR_NEUTRAL = 0x99aab5; // abu-abu (misal "tidak ada aktivitas")
+const EMBED_COLOR_ALERT = 0xe67e22; // oranye (threshold alert)
+
+async function sendDiscordMessage(content, webhookUrl = DISCORD_WEBHOOK_URL, color = EMBED_COLOR_DEFAULT) {
   if (!webhookUrl) return;
 
   const rolePrefix = DISCORD_ROLE_ID ? `<@&${DISCORD_ROLE_ID}> ` : "";
@@ -543,7 +666,17 @@ async function sendDiscordMessage(content, webhookUrl = DISCORD_WEBHOOK_URL) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        content: rolePrefix + content,
+        // "content" sekarang cuma dipakai buat ping role (kalau ada) — pesan
+        // utamanya ditaruh di "embeds" (description) supaya tampil sebagai
+        // card berwarna di Discord, bukan teks polos.
+        content: rolePrefix || undefined,
+        embeds: [
+          {
+            description: content,
+            color,
+            timestamp: new Date().toISOString(),
+          },
+        ],
         // allowed_mentions eksplisit supaya role benar-benar ke-notif (ping),
         // bukan cuma teks <@&ID> yang tampil sebagai teks biasa.
         allowed_mentions: { parse: ["roles"] },
@@ -637,7 +770,7 @@ async function flushMintBuffer(key) {
   }
 
   console.log(`📬 Mengirim ringkasan mint (${count}x) untuk key ${key}`);
-  await sendDiscordMessage(message);
+  await sendDiscordMessage(message, DISCORD_WEBHOOK_URL, EMBED_COLOR_MINT);
 }
 
 async function handleWalletActivityDetected({
@@ -659,6 +792,24 @@ async function handleWalletActivityDetected({
   const emoji = isSell ? "🔴" : "🟢";
   const actionText = isSell ? "menjual" : "membeli";
   const txUrl = `${EXPLORER_TX_BASE}/${txHash}`;
+
+  // Filter NFT yang sebenarnya BUKAN collectible, tapi representasi posisi LP
+  // (misal Uniswap v4 Position Manager) — supaya add/remove liquidity tidak
+  // salah kena notif "jual/beli NFT". Dicek dari daftar contract di EXCLUDED_NFT_CONTRACTS.
+  if (EXCLUDED_NFT_CONTRACTS.has((contractAddress || "").toLowerCase())) {
+    console.log(
+      `ℹ️  NFT ${label} diabaikan (contract ada di EXCLUDED_NFT_CONTRACTS, kemungkinan LP position, bukan NFT collectible) — Tx: ${txUrl}`
+    );
+    return;
+  }
+
+  // Filter BURN (NFT dikirim KE zero address) — ini bukan "jual ke wallet lain",
+  // tapi NFT-nya dihancurkan (misal saat tarik liquidity di Uniswap v4 Position
+  // Manager, posisi NFT-nya di-burn). Mirip logic isMintEvent() tapi arah sebaliknya.
+  if (toAddress === ZERO_ADDRESS) {
+    console.log(`ℹ️  NFT ${label} diabaikan (NFT di-burn ke zero address, bukan dijual ke wallet lain) — Tx: ${txUrl}`);
+    return;
+  }
 
   // Filter transfer NFT biasa (hibah/airdrop/kirim manual) yang BUKAN benar-benar
   // jual-beli — kalau tidak ada pembayaran (native value / token ERC20) yang
@@ -706,7 +857,7 @@ async function handleWalletActivityDetected({
     (collectionName ? `\nCollection : \`${collectionName}\`` : "") +
     (openSeaSlug ? `\nOpenSea : https://opensea.io/collection/${openSeaSlug}` : "");
 
-  await sendDiscordMessage(message, DISCORD_TRADES_WEBHOOK_URL);
+  await sendDiscordMessage(message, DISCORD_TRADES_WEBHOOK_URL, isSell ? EMBED_COLOR_SELL : EMBED_COLOR_BUY);
 }
 
 // ---------------------------------------------------------------------------
@@ -722,6 +873,25 @@ async function processActivities(activities) {
       activity.tokenId || activity.erc721TokenId || activity.erc1155Metadata?.[0]?.tokenId;
     const isNft = Boolean(tokenId);
     const contractAddress = activity.contractAddress || activity.rawContract?.address;
+
+    // Kasus 0: kemungkinan LP add/remove (mint/burn TOKEN NON-NFT dari/ke watched
+    // wallet). Dicek SEBELUM Kasus 1 (mint NFT) supaya mint/burn token LP tidak
+    // "ketelan" jadi mint NFT generic (karena isMintEvent() cuma cek fromAddress,
+    // tidak peduli itu NFT atau bukan).
+    if (TRACK_LP_ACTIVITY && !isNft) {
+      const isLpMint = isMintEvent(fromAddress) && WATCHED_WALLETS.includes(toAddress);
+      const isLpBurn = toAddress === ZERO_ADDRESS && WATCHED_WALLETS.includes(fromAddress);
+
+      if (isLpMint || isLpBurn) {
+        await handleLpActivityDetected({
+          isAdd: isLpMint,
+          watchedWallet: isLpMint ? toAddress : fromAddress,
+          contractAddress,
+          txHash: activity.hash,
+        });
+        continue;
+      }
+    }
 
     // Kasus 1: MINT (from == zero address)
     if (isMintEvent(fromAddress)) {
