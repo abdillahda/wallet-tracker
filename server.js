@@ -580,17 +580,20 @@ async function detectLpFunctionSelector(txHash) {
   }
 }
 
-async function handleLpActivityDetected({ isAdd, watchedWallet, contractAddress, txHash }) {
+async function handleLpActivityDetected({ isAdd, watchedWallet, contractAddress, txHash, skipSelectorCheck = false }) {
   const watchedLabel = walletLabel(watchedWallet);
   const txUrl = `${EXPLORER_TX_BASE}/${txHash}`;
 
-  const selectorCheck = await detectLpFunctionSelector(txHash);
-  if (!selectorCheck.matched) {
-    console.log(
-      `ℹ️  Mint/burn token terdeteksi tapi function selector (${selectorCheck.selector || "-"}) ` +
-        `tidak cocok pola LP yang dikenal, di-skip — Wallet: ${watchedLabel}, Tx: ${txUrl}`
-    );
-    return;
+  let selectorCheck = { matched: true, selector: null, functionName: null };
+  if (!skipSelectorCheck) {
+    selectorCheck = await detectLpFunctionSelector(txHash);
+    if (!selectorCheck.matched) {
+      console.log(
+        `ℹ️  Mint/burn token terdeteksi tapi function selector (${selectorCheck.selector || "-"}) ` +
+          `tidak cocok pola LP yang dikenal, di-skip — Wallet: ${watchedLabel}, Tx: ${txUrl}`
+      );
+      return;
+    }
   }
 
   const actionLabel = isAdd ? "Menambah Liquidity" : "Menarik Liquidity";
@@ -601,8 +604,10 @@ async function handleLpActivityDetected({ isAdd, watchedWallet, contractAddress,
   const message =
     `${emoji} **Kemungkinan ${actionLabel}!**\n` +
     `Wallet   : ${watchedLabel}\n` +
-    `Contract (LP Token): \`${contractAddress}\`\n` +
-    `Function : ${selectorCheck.functionName} (${selectorCheck.selector})\n` +
+    `Contract (LP Token/Position): \`${contractAddress}\`\n` +
+    (selectorCheck.functionName
+      ? `Function : ${selectorCheck.functionName} (${selectorCheck.selector})\n`
+      : "") +
     `Tx       : ${txUrl}`;
 
   await sendDiscordMessage(message, DISCORD_LP_WEBHOOK_URL, isAdd ? EMBED_COLOR_BUY : EMBED_COLOR_SELL);
@@ -874,11 +879,17 @@ async function processActivities(activities) {
     const isNft = Boolean(tokenId);
     const contractAddress = activity.contractAddress || activity.rawContract?.address;
 
-    // Kasus 0: kemungkinan LP add/remove (mint/burn TOKEN NON-NFT dari/ke watched
-    // wallet). Dicek SEBELUM Kasus 1 (mint NFT) supaya mint/burn token LP tidak
-    // "ketelan" jadi mint NFT generic (karena isMintEvent() cuma cek fromAddress,
-    // tidak peduli itu NFT atau bukan).
-    if (TRACK_LP_ACTIVITY && !isNft) {
+    // Kasus 0: kemungkinan LP add/remove. Ini mencakup DUA bentuk:
+    //   (a) TOKEN NON-NFT (ERC-20 LP token, misal Uniswap v2-style) — mint/burn
+    //       dari/ke watched wallet, diverifikasi lewat function selector.
+    //   (b) NFT dari contract yang ada di EXCLUDED_NFT_CONTRACTS (misal Uniswap
+    //       v4 Position Manager) — mint/burn NFT posisi LP, BUKAN NFT collectible,
+    //       jadi TIDAK boleh nyasar ke Kasus 1 (mint NFT) atau Kasus 2 (buy/sell NFT).
+    // Dicek SEBELUM Kasus 1 & Kasus 2 supaya mint/burn LP (baik ERC-20 maupun NFT)
+    // tidak "ketelan" jadi notif mint/buy/sell biasa.
+    const isExcludedLpContract = EXCLUDED_NFT_CONTRACTS.has((contractAddress || "").toLowerCase());
+
+    if (TRACK_LP_ACTIVITY && (!isNft || isExcludedLpContract)) {
       const isLpMint = isMintEvent(fromAddress) && WATCHED_WALLETS.includes(toAddress);
       const isLpBurn = toAddress === ZERO_ADDRESS && WATCHED_WALLETS.includes(fromAddress);
 
@@ -888,6 +899,10 @@ async function processActivities(activities) {
           watchedWallet: isLpMint ? toAddress : fromAddress,
           contractAddress,
           txHash: activity.hash,
+          // Kalau contract-nya sudah PASTI dikenal sebagai LP position manager
+          // (ada di EXCLUDED_NFT_CONTRACTS), skip verifikasi function selector —
+          // kita sudah cukup yakin ini LP tanpa perlu cek lagi.
+          skipSelectorCheck: isExcludedLpContract,
         });
         continue;
       }
