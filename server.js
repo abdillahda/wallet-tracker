@@ -267,6 +267,7 @@ async function recordAndCheckThreshold({ collectionKey, isSell, watchedLabel }) 
 
 let WATCHED_WALLETS = [];
 let WALLET_NAMES = {}; // address (lowercase) -> nama custom
+let WALLET_TAGS = {}; // address (lowercase) -> array tag (misal ["KOL"]), maksimal 3
 
 function loadWallets() {
   const filePath = path.join(__dirname, "wallets.json");
@@ -277,6 +278,7 @@ function loadWallets() {
 
     const addresses = [];
     const names = {};
+    const tags = {};
 
     list.forEach((entry) => {
       if (typeof entry === "string") {
@@ -287,12 +289,29 @@ function loadWallets() {
         if (addr) {
           addresses.push(addr);
           if (entry.name) names[addr] = entry.name;
+
+          if (Array.isArray(entry.tags) && entry.tags.length > 0) {
+            let walletTags = entry.tags.map((t) => String(t).trim()).filter(Boolean);
+
+            // Maksimal 3 tag per wallet — potong ke 3 pertama kalau lebih.
+            if (walletTags.length > 3) {
+              console.warn(
+                `⚠️  Wallet ${addr} punya ${walletTags.length} tags, dipotong ke 3 pertama: [${walletTags
+                  .slice(0, 3)
+                  .join(", ")}]`
+              );
+              walletTags = walletTags.slice(0, 3);
+            }
+
+            if (walletTags.length > 0) tags[addr] = walletTags;
+          }
         }
       }
     });
 
     WATCHED_WALLETS = addresses;
     WALLET_NAMES = names;
+    WALLET_TAGS = tags;
   } catch (err) {
     console.warn("⚠️  wallets.json tidak ditemukan/invalid, fallback ke env var WATCHED_WALLETS.");
     WATCHED_WALLETS = (process.env.WATCHED_WALLETS || "")
@@ -300,6 +319,7 @@ function loadWallets() {
       .map((a) => a.trim().toLowerCase())
       .filter(Boolean);
     WALLET_NAMES = {};
+    WALLET_TAGS = {};
   }
 
   console.log(`📋 Total wallet yang dipantau: ${WATCHED_WALLETS.length}`);
@@ -395,16 +415,21 @@ async function addAddressesToAlchemyWebhook(addresses) {
   return { pushed };
 }
 
-/** Ambil label tampilan untuk sebuah address: "Nama (0xabcd...wxyz)" kalau ada
- * nama custom, atau alamat penuh kalau tidak ada nama. */
+/** Ambil label tampilan untuk sebuah address: "Nama (0xabcd...wxyz) `Tag1` `Tag2`"
+ * kalau ada nama/tag custom, atau alamat penuh kalau tidak ada nama. */
 function walletLabel(address) {
   if (!address) return "-";
   const lower = address.toLowerCase();
   const name = WALLET_NAMES[lower];
-  if (!name) return address;
+  const tags = WALLET_TAGS[lower];
+
+  // Render tiap tag sebagai inline-code Discord (`Tag`) biar keliatan kayak badge.
+  const tagBadges = Array.isArray(tags) && tags.length > 0 ? " " + tags.map((t) => `\`${t}\``).join(" ") : "";
+
+  if (!name) return `${address}${tagBadges}`;
 
   const shortAddr = `${address.slice(0, 6)}...${address.slice(-4)}`;
-  return `${name} (${shortAddr})`;
+  return `${name} (${shortAddr})${tagBadges}`;
 }
 
 // ---------------------------------------------------------------------------
