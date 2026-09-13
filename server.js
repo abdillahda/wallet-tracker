@@ -415,7 +415,21 @@ async function addAddressesToAlchemyWebhook(addresses) {
   return { pushed };
 }
 
-/** Ambil label tampilan untuk sebuah address: "Nama (0xabcd...wxyz) `Tag1` `Tag2`"
+// Mapping emoji per tag — dipakai sebagai "pengganti warna" (Discord tidak
+// bisa render teks/badge berwarna custom per kata di pesan biasa). Tinggal
+// tambah/ubah entry di sini kalau mau nambah tag baru atau ganti emoji-nya.
+// PENTING: pencocokan case-sensitive — tag di wallets.json harus PERSIS sama
+// (misal "Whale" di sini beda dengan "whale" di wallets.json).
+const TAG_EMOJI_MAP = {
+  KOL: "🟣",
+  Whale: "🔴",
+  Degen: "🟢",
+  EJ: "🔵",
+  Stress: "🟡",
+};
+const DEFAULT_TAG_EMOJI = "🏷️"; // fallback buat tag yang tidak ada di TAG_EMOJI_MAP
+
+/** Ambil label tampilan untuk sebuah address: "Nama (0xabcd...wxyz) 🔴 Tag1 🟢 Tag2"
  * kalau ada nama/tag custom, atau alamat penuh kalau tidak ada nama. */
 function walletLabel(address) {
   if (!address) return "-";
@@ -423,8 +437,12 @@ function walletLabel(address) {
   const name = WALLET_NAMES[lower];
   const tags = WALLET_TAGS[lower];
 
-  // Render tiap tag sebagai inline-code Discord (`Tag`) biar keliatan kayak badge.
-  const tagBadges = Array.isArray(tags) && tags.length > 0 ? " " + tags.map((t) => `\`${t}\``).join(" ") : "";
+  // Tiap tag ditampilkan sebagai "emoji Tag" (emoji berfungsi kayak indikator
+  // warna, karena Discord tidak support teks berwarna custom per kata).
+  const tagBadges =
+    Array.isArray(tags) && tags.length > 0
+      ? " " + tags.map((t) => `${TAG_EMOJI_MAP[t] || DEFAULT_TAG_EMOJI} ${t}`).join(" ")
+      : "";
 
   if (!name) return `${address}${tagBadges}`;
 
