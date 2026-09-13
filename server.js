@@ -580,7 +580,14 @@ async function detectLpFunctionSelector(txHash) {
   }
 }
 
-async function handleLpActivityDetected({ isAdd, watchedWallet, contractAddress, txHash, skipSelectorCheck = false }) {
+async function handleLpActivityDetected({
+  isAdd,
+  watchedWallet,
+  contractAddress,
+  tokenId,
+  txHash,
+  skipSelectorCheck = false,
+}) {
   const watchedLabel = walletLabel(watchedWallet);
   const txUrl = `${EXPLORER_TX_BASE}/${txHash}`;
 
@@ -596,6 +603,19 @@ async function handleLpActivityDetected({ isAdd, watchedWallet, contractAddress,
     }
   }
 
+  // Kalau posisi LP-nya berbentuk NFT (ada tokenId, misal Uniswap v4 Position
+  // Manager), ambil metadata NFT-nya — assetName biasanya sudah berisi info
+  // pair/fee/price-range (contoh: "Uniswap - 4% - +/USDG - 1019.7<>1785.1").
+  let pairInfo = null;
+  if (tokenId) {
+    try {
+      const { assetName } = await fetchNftInfo(contractAddress, tokenId);
+      pairInfo = assetName || null;
+    } catch (err) {
+      console.error(`Gagal ambil metadata posisi LP (tokenId ${tokenId}):`, err);
+    }
+  }
+
   const actionLabel = isAdd ? "Menambah Liquidity" : "Menarik Liquidity";
   const emoji = isAdd ? "🟢" : "🔴";
 
@@ -605,6 +625,7 @@ async function handleLpActivityDetected({ isAdd, watchedWallet, contractAddress,
     `${emoji} **Kemungkinan ${actionLabel}!**\n` +
     `Wallet   : ${watchedLabel}\n` +
     `Contract (LP Token/Position): \`${contractAddress}\`\n` +
+    (pairInfo ? `Pair     : \`${pairInfo}\`\n` : "") +
     (selectorCheck.functionName
       ? `Function : ${selectorCheck.functionName} (${selectorCheck.selector})\n`
       : "") +
@@ -898,12 +919,27 @@ async function processActivities(activities) {
           isAdd: isLpMint,
           watchedWallet: isLpMint ? toAddress : fromAddress,
           contractAddress,
+          tokenId, // kalau ada (NFT-based LP position, misal Uniswap v4), dipakai buat ambil metadata pair
           txHash: activity.hash,
           // Kalau contract-nya sudah PASTI dikenal sebagai LP position manager
           // (ada di EXCLUDED_NFT_CONTRACTS), skip verifikasi function selector —
           // kita sudah cukup yakin ini LP tanpa perlu cek lagi.
           skipSelectorCheck: isExcludedLpContract,
         });
+        continue;
+      }
+
+      // PENTING: Kasus 1 di bawah (mint tracker) TIDAK mengecek watched wallet
+      // sama sekali (memang didesain notif SEMUA mint dari contract yang dipantau
+      // Alchemy, bukan cuma dari watched wallet). Jadi kalau mint/burn ini dari
+      // contract yang SUDAH PASTI dikenal sebagai LP position (bukan collectible),
+      // tetap harus di-skip di sini juga — supaya tidak "ketelan" ke mint tracker
+      // meskipun wallet-nya bukan watched wallet (makanya tidak match isLpMint/isLpBurn
+      // di atas, yang mensyaratkan watched wallet).
+      if (isExcludedLpContract) {
+        console.log(
+          `ℹ️  Mint/burn dari contract LP (${contractAddress}) diabaikan dari mint tracker (bukan watched wallet, tidak ada notif LP juga).`
+        );
         continue;
       }
     }
