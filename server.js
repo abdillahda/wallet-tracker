@@ -827,7 +827,7 @@ async function flushMintBuffer(key) {
   const count = entry.tokenIds.length;
   const txLinks = [...entry.txHashes].map((h) => `${EXPLORER_TX_BASE}/${h}`);
   const openSeaLine = entry.openSeaSlug
-    ? `\nOpenSea : https://opensea.io/collection/${entry.contractAddress}`
+    ? `\nOpenSea : https://opensea.io/assets/robinhood/${entry.contractAddress}`
     : "";
 
   let message;
@@ -945,8 +945,8 @@ async function handleWalletActivityDetected({
   // dikasih user — title, description (wallet + tag), lalu fields sejajar
   // (NFT/Collection/Chain, From/To), dan link (OpenSea + Tx) di 1 field.
   const linksParts = [`[Tx](${txUrl})`];
-  linksParts.push(`[OpenSea](https://opensea.io/collection/${contractAddress})`);
-  
+  linksParts.push(`[OpenSea](https://opensea.io/assets/robinhood/${contractAddress})`);
+
   const embed = {
     title: isSell ? "NFT TRANSFER OUT" : "NFT TRANSFER IN",
     description: watchedLabel,
