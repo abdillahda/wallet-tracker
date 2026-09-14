@@ -424,8 +424,8 @@ const TAG_EMOJI_MAP = {
   KOL: "🟣",
   Whale: "🔴",
   Degen: "🟢",
-  EJ: "🔵",
-  Stress: "🟡",
+  Dev: "🔵",
+  Team: "🟡",
 };
 const DEFAULT_TAG_EMOJI = "🏷️"; // fallback buat tag yang tidak ada di TAG_EMOJI_MAP
 
@@ -688,7 +688,7 @@ async function handleLpActivityDetected({
  */
 async function fetchNftInfo(contractAddress, tokenId) {
   if (!ALCHEMY_API_KEY || !contractAddress || tokenId === undefined) {
-    return { assetName: null, collectionName: null, openSeaSlug: null };
+    return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null };
   }
 
   try {
@@ -696,7 +696,7 @@ async function fetchNftInfo(contractAddress, tokenId) {
     const res = await fetch(url);
     if (!res.ok) {
       console.warn(`⚠️  NFT API respon ${res.status} untuk ${contractAddress} #${tokenId}`);
-      return { assetName: null, collectionName: null, openSeaSlug: null };
+      return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null };
     }
     const data = await res.json();
 
@@ -704,11 +704,13 @@ async function fetchNftInfo(contractAddress, tokenId) {
     const openSeaMeta = data?.contract?.openSeaMetadata;
     const collectionName = openSeaMeta?.collectionName || data?.contract?.name || null;
     const openSeaSlug = openSeaMeta?.collectionSlug || null;
+    const imageUrl =
+      data?.image?.cachedUrl || data?.image?.thumbnailUrl || data?.image?.originalUrl || null;
 
-    return { assetName, collectionName, openSeaSlug };
+    return { assetName, collectionName, openSeaSlug, imageUrl };
   } catch (err) {
     console.warn("⚠️  Gagal fetch NFT metadata:", err.message);
-    return { assetName: null, collectionName: null, openSeaSlug: null };
+    return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null };
   }
 }
 
@@ -756,6 +758,30 @@ async function sendDiscordMessage(content, webhookUrl = DISCORD_WEBHOOK_URL, col
   }
 }
 
+/** Kirim embed Discord LENGKAP (title, fields, thumbnail, footer) — beda dari
+ * sendDiscordMessage() yang cuma kirim teks polos di "description". Dipakai
+ * buat notif yang butuh tampilan field-based rapi kayak card (misal buy/sell NFT). */
+async function sendDiscordEmbed(embed, webhookUrl = DISCORD_WEBHOOK_URL) {
+  if (!webhookUrl) return;
+
+  const rolePrefix = DISCORD_ROLE_ID ? `<@&${DISCORD_ROLE_ID}> ` : "";
+
+  try {
+    await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: rolePrefix || undefined,
+        embeds: [{ timestamp: new Date().toISOString(), ...embed }],
+        allowed_mentions: { parse: ["roles"] },
+      }),
+    });
+  } catch (err) {
+    console.error("Gagal kirim notifikasi Discord (embed):", err);
+  }
+}
+
+
 async function handleMintDetected({ contractAddress, tokenId, mintedTo, txHash }) {
   const { assetName, collectionName, openSeaSlug } = await fetchNftInfo(contractAddress, tokenId);
 
@@ -801,7 +827,7 @@ async function flushMintBuffer(key) {
   const count = entry.tokenIds.length;
   const txLinks = [...entry.txHashes].map((h) => `${EXPLORER_TX_BASE}/${h}`);
   const openSeaLine = entry.openSeaSlug
-    ? `\nOpenSea : https://opensea.io/collection/${entry.openSeaSlug}`
+    ? `\nOpenSea : https://opensea.io/collection/${entry.contractAddress}`
     : "";
 
   let message;
@@ -894,7 +920,7 @@ async function handleWalletActivityDetected({
     }
   }
 
-  const { assetName, collectionName, openSeaSlug } = await fetchNftInfo(contractAddress, tokenId);
+  const { assetName, collectionName, openSeaSlug, imageUrl } = await fetchNftInfo(contractAddress, tokenId);
   const asset = assetName || `Token ID ${tokenId}`;
 
   console.log(`${emoji} NFT ${label} TERDETEKSI (wallet: ${watchedLabel})`);
@@ -915,18 +941,32 @@ async function handleWalletActivityDetected({
     console.error("Gagal memproses threshold alert:", err);
   });
 
-  const message =
-    `${emoji} **Kemungkinan ${actionText} NFT!**\n` +
-    `Wallet : \`${watchedLabel}\`\n` +
-    `Contract : \`${contractAddress}\`\n` +
-    `Asset : \`${asset}\`\n` +
-    `From : \`${walletLabel(fromAddress)}\`\n` +
-    `To : \`${walletLabel(toAddress)}\`\n` +
-    `Tx : ${txUrl}` +
-    (collectionName ? `\nCollection : \`${collectionName}\`` : "") +
-    (openSeaSlug ? `\nOpenSea : https://opensea.io/collection/${openSeaSlug}` : "");
+  // Format "NFT TRANSFER OUT/IN" field-based, mengikuti referensi card yang
+  // dikasih user — title, description (wallet + tag), lalu fields sejajar
+  // (NFT/Collection/Chain, From/To), dan link (OpenSea + Tx) di 1 field.
+  const linksParts = [`[Tx](${txUrl})`];
+  linksParts.push(`[OpenSea](https://opensea.io/collection/${contractAddress})`);
+  
+  const embed = {
+    title: isSell ? "NFT TRANSFER OUT" : "NFT TRANSFER IN",
+    description: watchedLabel,
+    color: isSell ? EMBED_COLOR_SELL : EMBED_COLOR_BUY,
+    fields: [
+      { name: "NFT", value: asset, inline: true },
+      { name: "Collection", value: collectionName || "-", inline: true },
+      { name: "Chain", value: "Robinhood", inline: true },
+      { name: "From", value: walletLabel(fromAddress), inline: true },
+      { name: "To", value: walletLabel(toAddress), inline: true },
+      { name: "\u200b", value: "\u200b", inline: true }, // spacer biar grid tetap 3 kolom rapi
+      { name: "Links", value: linksParts.join(" · "), inline: false },
+    ],
+  };
 
-  await sendDiscordMessage(message, DISCORD_TRADES_WEBHOOK_URL, isSell ? EMBED_COLOR_SELL : EMBED_COLOR_BUY);
+  if (imageUrl) {
+    embed.thumbnail = { url: imageUrl };
+  }
+
+  await sendDiscordEmbed(embed, DISCORD_TRADES_WEBHOOK_URL);
 }
 
 // ---------------------------------------------------------------------------
