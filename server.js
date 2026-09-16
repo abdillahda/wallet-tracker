@@ -114,7 +114,7 @@ const CHAINS = {
     label: "ARC",
     nftApiBase: `https://${ARC_SUBDOMAIN}.g.alchemy.com/nft/v3/${ALCHEMY_API_KEY}`,
     rpcApiBase: `https://${ARC_SUBDOMAIN}.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
-    explorerTxBase: process.env.ARC_EXPLORER_TX_BASE || "https://arcscan.app/tx",
+    explorerTxBase: process.env.ARC_EXPLORER_TX_BASE || "https://www.arcexplorer.org/tx",
     signingKey: process.env.ALCHEMY_SIGNING_KEY_ARC || "",
     webhookId: process.env.ALCHEMY_WEBHOOK_ID_ARC || "",
     // Sama seperti di atas — dipakai buat auto-detect dari payload. Default
@@ -949,7 +949,7 @@ async function flushMintBuffer(key) {
   const chain = entry.chain || DEFAULT_CHAIN;
   const txLinks = [...entry.txHashes].map((h) => `${chain.explorerTxBase}/${h}`);
   const openSeaLine = entry.openSeaSlug
-    ? `\nOpenSea : https://opensea.io/assets/${chain.key}/${entry.contractAddress}`
+    ? `\nOpenSea : https://opensea.io/collection/${entry.contractAddress}`
     : "";
 
   let message;
@@ -1072,7 +1072,7 @@ async function handleWalletActivityDetected({
   // dikasih user — title, description (wallet + tag), lalu fields sejajar
   // (NFT/Collection/Chain, From/To), dan link (OpenSea + Tx) di 1 field.
   const linksParts = [`[Tx](${txUrl})`];
-  linksParts.push(`[OpenSea](https://opensea.io/assets/${chain.key}/${entry.contractAddress})`);
+  linksParts.push(`[OpenSea](https://opensea.io/collection/${contractAddress})`);
 
   const embed = {
     title: isSell ? "NFT TRANSFER OUT" : "NFT TRANSFER IN",
