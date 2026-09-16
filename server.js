@@ -26,7 +26,8 @@ const PORT = process.env.PORT || 3000;
 // address (kecil), langsung diproses lalu dibuang.
 const upload = multer({ storage: multer.memoryStorage() });
 
-const SIGNING_KEY = process.env.ALCHEMY_SIGNING_KEY; // Alchemy Dashboard > Notify > webhook detail > Signing Key
+// CATATAN: signing key sekarang per-chain, lihat object CHAINS di bawah
+// (ALCHEMY_SIGNING_KEY untuk Robinhood, ALCHEMY_SIGNING_KEY_ARC untuk ARC).
 const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY; // Alchemy Dashboard > App kamu > API Key (beda dari signing key!)
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
@@ -67,13 +68,61 @@ const TRACK_WALLET_ACTIVITY = process.env.TRACK_WALLET_ACTIVITY !== "false";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
-// Base URL NFT API Alchemy untuk Robinhood Chain mainnet.
-// Kalau kamu pakai testnet, ganti "robinhood-mainnet" -> "robinhood-testnet".
-const NFT_API_BASE = `https://robinhood-mainnet.g.alchemy.com/nft/v3/${ALCHEMY_API_KEY}`;
+// --- Konfigurasi multi-chain ---
+// Tiap chain punya subdomain Alchemy, block explorer, signing key webhook, dan
+// daftar contract LP sendiri. Semua fungsi yang butuh info chain terima object
+// dari CHAINS ini sebagai parameter (bukan konstanta global lagi).
+//
+// Subdomain Alchemy bisa dioverride lewat env kalau sewaktu-waktu berubah
+// (misal mau pindah ke testnet: ROBINHOOD_ALCHEMY_SUBDOMAIN=robinhood-testnet).
+const ROBINHOOD_SUBDOMAIN = process.env.ROBINHOOD_ALCHEMY_SUBDOMAIN || "robinhood-mainnet";
+const ARC_SUBDOMAIN = process.env.ARC_ALCHEMY_SUBDOMAIN || "arc-mainnet";
 
-// Base URL JSON-RPC Alchemy (dipakai untuk cek apakah suatu transaksi benar-benar
-// ada pembayaran/payment, bukan sekadar transfer NFT biasa).
-const RPC_API_BASE = `https://robinhood-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}`;
+/** Bikin daftar contract yang di-exclude (LP position, bukan NFT collectible). */
+function buildExcludedSet(defaults, envValue) {
+  return new Set(
+    [...defaults, ...(envValue || "").split(",").map((a) => a.trim()).filter(Boolean)].map((a) =>
+      a.toLowerCase()
+    )
+  );
+}
+
+const CHAINS = {
+  robinhood: {
+    key: "robinhood",
+    label: "Robinhood",
+    nftApiBase: `https://${ROBINHOOD_SUBDOMAIN}.g.alchemy.com/nft/v3/${ALCHEMY_API_KEY}`,
+    rpcApiBase: `https://${ROBINHOOD_SUBDOMAIN}.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
+    explorerTxBase: process.env.ROBINHOOD_EXPLORER_TX_BASE || "https://robinhoodchain.blockscout.com/tx",
+    signingKey: process.env.ALCHEMY_SIGNING_KEY || "",
+    webhookId: process.env.ALCHEMY_WEBHOOK_ID || "",
+    // NFT API Alchemy tersedia di Robinhood Chain.
+    nftApiEnabled: process.env.ROBINHOOD_NFT_API_ENABLED !== "false",
+    excludedNftContracts: buildExcludedSet(
+      ["0x58daec3116aae6d93017baaea7749052e8a04fa7"], // Uniswap v4 Position Manager (Robinhood)
+      process.env.EXCLUDED_NFT_CONTRACTS
+    ),
+  },
+  arc: {
+    key: "arc",
+    label: "ARC",
+    nftApiBase: `https://${ARC_SUBDOMAIN}.g.alchemy.com/nft/v3/${ALCHEMY_API_KEY}`,
+    rpcApiBase: `https://${ARC_SUBDOMAIN}.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
+    explorerTxBase: process.env.ARC_EXPLORER_TX_BASE || "https://arcscan.app/tx",
+    signingKey: process.env.ALCHEMY_SIGNING_KEY_ARC || "",
+    webhookId: process.env.ALCHEMY_WEBHOOK_ID_ARC || "",
+    // PENTING: per dokumentasi Alchemy, NFT API BELUM tersedia di Arc (statusnya
+    // masih "Request support"). Jadi default-nya dimatikan — nama collection,
+    // nama asset, dan gambar NFT tidak akan tampil untuk chain ini (fallback ke
+    // contract address / token ID). Set ARC_NFT_API_ENABLED=true kalau Alchemy
+    // sudah support, tanpa perlu ubah kode.
+    nftApiEnabled: process.env.ARC_NFT_API_ENABLED === "true",
+    excludedNftContracts: buildExcludedSet([], process.env.EXCLUDED_NFT_CONTRACTS_ARC),
+  },
+};
+
+/** Chain default (dipakai endpoint lama /webhook/... yang tanpa prefix chain). */
+const DEFAULT_CHAIN = CHAINS.robinhood;
 
 // Kalau true (default), notifikasi BUY/SELL hanya dikirim jika transaksi tersebut
 // benar-benar ada pembayaran (native value atau transfer token ERC20 seperti
@@ -102,21 +151,8 @@ const DISCORD_LP_WEBHOOK_URL = process.env.DISCORD_LP_WEBHOOK_URL || DISCORD_WEB
 // juga (bukan cuma NFT), kalau tidak event mint/burn token tidak akan pernah masuk.
 const TRACK_LP_ACTIVITY = process.env.TRACK_LP_ACTIVITY !== "false";
 
-// Daftar contract address NFT yang di-EXCLUDE dari deteksi buy/sell, karena
-// sebenarnya bukan NFT collectible tapi representasi posisi LP (misal Uniswap v4
-// Position Manager — nambah/tarik liquidity di v4 mint/burn NFT, BUKAN jual-beli
-// NFT beneran). Default sudah include Position Manager Uniswap v4 di Robinhood
-// Chain (dari transaksi yang ditemukan). Bisa ditambah manual lewat env var,
-// dipisah koma: EXCLUDED_NFT_CONTRACTS=0xabc...,0xdef...
-const EXCLUDED_NFT_CONTRACTS = new Set(
-  [
-    "0x58daec3116aae6d93017baaea7749052e8a04fa7", // Uniswap v4 Position Manager (Robinhood Chain)
-    ...(process.env.EXCLUDED_NFT_CONTRACTS || "").split(",").map((a) => a.trim().toLowerCase()).filter(Boolean),
-  ].map((a) => a.toLowerCase())
-);
-
-// Block explorer untuk link transaksi di notifikasi.
-const EXPLORER_TX_BASE = "https://robinhoodchain.blockscout.com/tx";
+// CATATAN: daftar contract yang di-exclude (LP position) & block explorer
+// sekarang didefinisikan PER-CHAIN di object CHAINS di atas.
 
 // ---------------------------------------------------------------------------
 // BATCHING UNTUK MINT BERUNTUN
@@ -377,11 +413,12 @@ function parseAddressesFromTxt(fileBuffer) {
 /** Push address baru ke Alchemy webhook (Notify API) via endpoint
  * update-webhook-addresses, mode APPEND (addresses_to_add), bukan replace.
  * Otomatis dibagi per 500 address per request (limit dari Alchemy). */
-async function addAddressesToAlchemyWebhook(addresses) {
-  if (!ALCHEMY_AUTH_TOKEN || !ALCHEMY_WEBHOOK_ID) {
-    throw new Error(
-      "ALCHEMY_AUTH_TOKEN atau ALCHEMY_WEBHOOK_ID belum diisi di .env — tidak bisa push ke Alchemy."
-    );
+async function addAddressesToAlchemyWebhook(addresses, chain) {
+  if (!ALCHEMY_AUTH_TOKEN) {
+    throw new Error("ALCHEMY_AUTH_TOKEN belum diisi di .env — tidak bisa push ke Alchemy.");
+  }
+  if (!chain.webhookId) {
+    throw new Error(`Webhook ID untuk chain ${chain.label} belum diisi di .env — tidak bisa push.`);
   }
   if (addresses.length === 0) return { pushed: 0 };
 
@@ -398,7 +435,7 @@ async function addAddressesToAlchemyWebhook(addresses) {
         "X-Alchemy-Token": ALCHEMY_AUTH_TOKEN,
       },
       body: JSON.stringify({
-        webhook_id: ALCHEMY_WEBHOOK_ID,
+        webhook_id: chain.webhookId,
         addresses_to_add: batch,
         addresses_to_remove: [],
       }),
@@ -413,6 +450,31 @@ async function addAddressesToAlchemyWebhook(addresses) {
   }
 
   return { pushed };
+}
+
+/** Push address ke webhook SEMUA chain yang webhookId-nya sudah diisi.
+ * Karena wallets.json dipakai bersama lintas chain, address baru didaftarkan
+ * ke semua webhook sekaligus. Kegagalan di satu chain tidak membatalkan chain
+ * lain — tiap hasil dilaporkan terpisah. */
+async function addAddressesToAllChains(addresses) {
+  const results = {};
+
+  for (const chain of Object.values(CHAINS)) {
+    if (!chain.webhookId) {
+      results[chain.key] = { pushed: 0, skipped: true, error: `Webhook ID chain ${chain.label} belum diisi` };
+      continue;
+    }
+
+    try {
+      const { pushed } = await addAddressesToAlchemyWebhook(addresses, chain);
+      results[chain.key] = { pushed, error: null };
+    } catch (err) {
+      console.error(`Gagal push address ke Alchemy (chain ${chain.label}):`, err);
+      results[chain.key] = { pushed: 0, error: err.message };
+    }
+  }
+
+  return results;
 }
 
 // Mapping emoji per tag — dipakai sebagai "pengganti warna" (Discord tidak
@@ -467,8 +529,11 @@ app.use(
   })
 );
 
-function isValidSignature(req) {
-  if (!SIGNING_KEY) return true; // skip validasi kalau belum diset (mode dev)
+function isValidSignature(req, chain = DEFAULT_CHAIN) {
+  // Tiap webhook Alchemy punya signing key SENDIRI, jadi key-nya diambil dari
+  // config chain yang sesuai dengan endpoint yang menerima request ini.
+  const signingKey = chain.signingKey;
+  if (!signingKey) return true; // skip validasi kalau belum diset (mode dev)
 
   const signature = req.headers["x-alchemy-signature"];
   if (!signature) {
@@ -476,7 +541,7 @@ function isValidSignature(req) {
     return false;
   }
 
-  const hmac = crypto.createHmac("sha256", SIGNING_KEY);
+  const hmac = crypto.createHmac("sha256", signingKey);
   hmac.update(req.rawBody);
   const digest = hmac.digest("hex");
 
@@ -501,10 +566,10 @@ function isMintEvent(fromAddress) {
 // transfer/hibah/airdrop biasa (tanpa pembayaran). Fungsi ini mengecek transaksi
 // (via JSON-RPC) apakah ada pembayaran yang menyertai (native value ATAU
 // transfer token ERC20 seperti WETH/USDC dalam transaksi yang sama).
-async function isRealPurchaseTx(txHash) {
+async function isRealPurchaseTx(txHash, chain = DEFAULT_CHAIN) {
   try {
     const [txRes, receiptRes] = await Promise.all([
-      fetch(RPC_API_BASE, {
+      fetch(chain.rpcApiBase, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -514,7 +579,7 @@ async function isRealPurchaseTx(txHash) {
           params: [txHash],
         }),
       }),
-      fetch(RPC_API_BASE, {
+      fetch(chain.rpcApiBase, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -594,9 +659,9 @@ const LP_FUNCTION_SELECTORS = {
 
 /** Ambil function selector (4 byte pertama tx.input) dari suatu tx via RPC,
  * lalu cocokkan ke LP_FUNCTION_SELECTORS. Return { matched, selector, functionName }. */
-async function detectLpFunctionSelector(txHash) {
+async function detectLpFunctionSelector(txHash, chain = DEFAULT_CHAIN) {
   try {
-    const res = await fetch(RPC_API_BASE, {
+    const res = await fetch(chain.rpcApiBase, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -630,13 +695,14 @@ async function handleLpActivityDetected({
   tokenId,
   txHash,
   skipSelectorCheck = false,
+  chain = DEFAULT_CHAIN,
 }) {
   const watchedLabel = walletLabel(watchedWallet);
-  const txUrl = `${EXPLORER_TX_BASE}/${txHash}`;
+  const txUrl = `${chain.explorerTxBase}/${txHash}`;
 
   let selectorCheck = { matched: true, selector: null, functionName: null };
   if (!skipSelectorCheck) {
-    selectorCheck = await detectLpFunctionSelector(txHash);
+    selectorCheck = await detectLpFunctionSelector(txHash, chain);
     if (!selectorCheck.matched) {
       console.log(
         `ℹ️  Mint/burn token terdeteksi tapi function selector (${selectorCheck.selector || "-"}) ` +
@@ -652,7 +718,7 @@ async function handleLpActivityDetected({
   let pairInfo = null;
   if (tokenId) {
     try {
-      const { assetName } = await fetchNftInfo(contractAddress, tokenId);
+      const { assetName } = await fetchNftInfo(contractAddress, tokenId, chain);
       pairInfo = assetName || null;
     } catch (err) {
       console.error(`Gagal ambil metadata posisi LP (tokenId ${tokenId}):`, err);
@@ -666,6 +732,7 @@ async function handleLpActivityDetected({
 
   const message =
     `${emoji} **Kemungkinan ${actionLabel}!**\n` +
+    `Chain    : ${chain.label}\n` +
     `Wallet   : ${watchedLabel}\n` +
     `Contract (LP Token/Position): \`${contractAddress}\`\n` +
     (pairInfo ? `Pair     : \`${pairInfo}\`\n` : "") +
@@ -686,13 +753,20 @@ async function handleLpActivityDetected({
  * Kalau ALCHEMY_API_KEY belum diisi atau request gagal, return fallback null
  * supaya notifikasi tetap terkirim (cuma tanpa nama asset/collection).
  */
-async function fetchNftInfo(contractAddress, tokenId) {
+async function fetchNftInfo(contractAddress, tokenId, chain = DEFAULT_CHAIN) {
+  // Sebagian chain (misal Arc) belum didukung NFT API Alchemy — di situ kita
+  // langsung return kosong supaya tidak buang-buang request ke endpoint yang
+  // pasti gagal. Notifikasi tetap jalan, cuma tanpa nama collection/asset/gambar.
+  if (!chain.nftApiEnabled) {
+    return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null };
+  }
+
   if (!ALCHEMY_API_KEY || !contractAddress || tokenId === undefined) {
     return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null };
   }
 
   try {
-    const url = `${NFT_API_BASE}/getNFTMetadata?contractAddress=${contractAddress}&tokenId=${tokenId}`;
+    const url = `${chain.nftApiBase}/getNFTMetadata?contractAddress=${contractAddress}&tokenId=${tokenId}`;
     const res = await fetch(url);
     if (!res.ok) {
       console.warn(`⚠️  NFT API respon ${res.status} untuk ${contractAddress} #${tokenId}`);
@@ -782,17 +856,20 @@ async function sendDiscordEmbed(embed, webhookUrl = DISCORD_WEBHOOK_URL) {
 }
 
 
-async function handleMintDetected({ contractAddress, tokenId, mintedTo, txHash }) {
-  const { assetName, collectionName, openSeaSlug } = await fetchNftInfo(contractAddress, tokenId);
+async function handleMintDetected({ contractAddress, tokenId, mintedTo, txHash, chain = DEFAULT_CHAIN }) {
+  const { assetName, collectionName, openSeaSlug } = await fetchNftInfo(contractAddress, tokenId, chain);
 
   console.log("🎨 MINT TERDETEKSI (masuk buffer)");
   console.log(`   Contract     : ${contractAddress}`);
   console.log(`   Token ID     : ${tokenId}`);
   console.log(`   Minted from  : ${walletLabel(mintedTo)}`);
-  console.log(`   Tx           : ${EXPLORER_TX_BASE}/${txHash}`);
+  console.log(`   Chain        : ${chain.label}`);
+  console.log(`   Tx           : ${chain.explorerTxBase}/${txHash}`);
   console.log("----------------------------------------");
 
-  const key = `${contractAddress}|${mintedTo}`;
+  // Key sertakan chain supaya mint dengan contract+wallet sama di chain berbeda
+  // tidak tergabung jadi satu ringkasan.
+  const key = `${chain.key}|${contractAddress}|${mintedTo}`;
 
   if (!mintBuffer.has(key)) {
     mintBuffer.set(key, {
@@ -800,6 +877,7 @@ async function handleMintDetected({ contractAddress, tokenId, mintedTo, txHash }
       mintedTo,
       collectionName,
       openSeaSlug,
+      chain,
       tokenIds: [],
       txHashes: new Set(),
       timer: null,
@@ -825,9 +903,10 @@ async function flushMintBuffer(key) {
 
   const mintedFromLabel = walletLabel(entry.mintedTo);
   const count = entry.tokenIds.length;
-  const txLinks = [...entry.txHashes].map((h) => `${EXPLORER_TX_BASE}/${h}`);
+  const chain = entry.chain || DEFAULT_CHAIN;
+  const txLinks = [...entry.txHashes].map((h) => `${chain.explorerTxBase}/${h}`);
   const openSeaLine = entry.openSeaSlug
-    ? `\nOpenSea : https://opensea.io/assets/robinhood/${entry.contractAddress}`
+    ? `\nOpenSea : https://opensea.io/assets/${chain.key}/${entry.contractAddress}`
     : "";
 
   let message;
@@ -836,6 +915,7 @@ async function flushMintBuffer(key) {
     // Cuma 1 mint -> format seperti biasa
     message =
       `🎨 **Mint baru terdeteksi!**\n` +
+      `Chain : \`${chain.label}\`\n` +
       `Contract : \`${entry.contractAddress}\`\n` +
       `Asset : \`${entry.tokenIds[0]}\`\n` +
       `Minted from : \`${mintedFromLabel}\`\n` +
@@ -855,6 +935,7 @@ async function flushMintBuffer(key) {
 
     message =
       `🎨 **${count}x Mint baru terdeteksi!**\n` +
+      `Chain : \`${chain.label}\`\n` +
       `Contract : \`${entry.contractAddress}\`\n` +
       `Collection : \`${entry.collectionName || "-"}\`\n` +
       `Minted from : \`${mintedFromLabel}\`\n` +
@@ -878,6 +959,7 @@ async function handleWalletActivityDetected({
   fromAddress,
   toAddress,
   txHash,
+  chain = DEFAULT_CHAIN,
 }) {
   const watchedLabel = walletLabel(watchedWallet);
   // OUTGOING (NFT keluar dari watched wallet) = indikasi SELL
@@ -886,12 +968,12 @@ async function handleWalletActivityDetected({
   const label = isSell ? "SELL" : "BUY";
   const emoji = isSell ? "🔴" : "🟢";
   const actionText = isSell ? "menjual" : "membeli";
-  const txUrl = `${EXPLORER_TX_BASE}/${txHash}`;
+  const txUrl = `${chain.explorerTxBase}/${txHash}`;
 
   // Filter NFT yang sebenarnya BUKAN collectible, tapi representasi posisi LP
   // (misal Uniswap v4 Position Manager) — supaya add/remove liquidity tidak
   // salah kena notif "jual/beli NFT". Dicek dari daftar contract di EXCLUDED_NFT_CONTRACTS.
-  if (EXCLUDED_NFT_CONTRACTS.has((contractAddress || "").toLowerCase())) {
+  if (chain.excludedNftContracts.has((contractAddress || "").toLowerCase())) {
     console.log(
       `ℹ️  NFT ${label} diabaikan (contract ada di EXCLUDED_NFT_CONTRACTS, kemungkinan LP position, bukan NFT collectible) — Tx: ${txUrl}`
     );
@@ -911,7 +993,7 @@ async function handleWalletActivityDetected({
   // menyertai NFT dalam transaksi yang sama, transaksi ini di-skip total
   // (tidak dianggap BUY/SELL, tidak masuk summary/threshold, tidak kirim notif).
   if (TRACK_ONLY_REAL_TRADES) {
-    const isRealTrade = await isRealPurchaseTx(txHash);
+    const isRealTrade = await isRealPurchaseTx(txHash, chain);
     if (!isRealTrade) {
       console.log(
         `ℹ️  NFT ${label} diabaikan (tidak ada pembayaran terdeteksi, kemungkinan transfer/hibah biasa) — Tx: ${txUrl}`
@@ -920,7 +1002,7 @@ async function handleWalletActivityDetected({
     }
   }
 
-  const { assetName, collectionName, openSeaSlug, imageUrl } = await fetchNftInfo(contractAddress, tokenId);
+  const { assetName, collectionName, openSeaSlug, imageUrl } = await fetchNftInfo(contractAddress, tokenId, chain);
   const asset = assetName || `Token ID ${tokenId}`;
 
   console.log(`${emoji} NFT ${label} TERDETEKSI (wallet: ${watchedLabel})`);
@@ -933,7 +1015,9 @@ async function handleWalletActivityDetected({
   console.log("----------------------------------------");
 
   // Catat transaksi ini untuk ringkasan berkala (tidak memengaruhi notifikasi di bawah).
-  const collectionKey = collectionName || contractAddress;
+  // Key sertakan label chain supaya collection dengan nama sama di chain berbeda
+  // tidak tergabung statistiknya.
+  const collectionKey = `${chain.label} • ${collectionName || contractAddress}`;
   recordTransactionForSummary({ collectionKey, isSell, watchedLabel });
 
   // Cek juga apakah threshold wallet "compak" beli/jual sudah tercapai (alert instan terpisah).
@@ -945,7 +1029,7 @@ async function handleWalletActivityDetected({
   // dikasih user — title, description (wallet + tag), lalu fields sejajar
   // (NFT/Collection/Chain, From/To), dan link (OpenSea + Tx) di 1 field.
   const linksParts = [`[Tx](${txUrl})`];
-  linksParts.push(`[OpenSea](https://opensea.io/assets/robinhood/${contractAddress})`);
+  linksParts.push(`[OpenSea](https://opensea.io/assets/${chain.key}/${contractAddress})`);
 
   const embed = {
     title: isSell ? "NFT TRANSFER OUT" : "NFT TRANSFER IN",
@@ -954,7 +1038,7 @@ async function handleWalletActivityDetected({
     fields: [
       { name: "NFT", value: asset, inline: true },
       { name: "Collection", value: collectionName || "-", inline: true },
-      { name: "Chain", value: "Robinhood", inline: true },
+      { name: "Chain", value: chain.label, inline: true },
       { name: "From", value: walletLabel(fromAddress), inline: true },
       { name: "To", value: walletLabel(toAddress), inline: true },
       { name: "\u200b", value: "\u200b", inline: true }, // spacer biar grid tetap 3 kolom rapi
@@ -973,7 +1057,7 @@ async function handleWalletActivityDetected({
 // SHARED PAYLOAD PROCESSOR — dipakai oleh semua route webhook
 // ---------------------------------------------------------------------------
 
-async function processActivities(activities) {
+async function processActivities(activities, chain = DEFAULT_CHAIN) {
   for (const activity of activities) {
     const fromAddress = (activity.fromAddress || activity.from || "").toLowerCase();
     const toAddress = (activity.toAddress || activity.to || "").toLowerCase();
@@ -991,7 +1075,7 @@ async function processActivities(activities) {
     //       jadi TIDAK boleh nyasar ke Kasus 1 (mint NFT) atau Kasus 2 (buy/sell NFT).
     // Dicek SEBELUM Kasus 1 & Kasus 2 supaya mint/burn LP (baik ERC-20 maupun NFT)
     // tidak "ketelan" jadi notif mint/buy/sell biasa.
-    const isExcludedLpContract = EXCLUDED_NFT_CONTRACTS.has((contractAddress || "").toLowerCase());
+    const isExcludedLpContract = chain.excludedNftContracts.has((contractAddress || "").toLowerCase());
 
     if (TRACK_LP_ACTIVITY && (!isNft || isExcludedLpContract)) {
       const isLpMint = isMintEvent(fromAddress) && WATCHED_WALLETS.includes(toAddress);
@@ -1008,6 +1092,7 @@ async function processActivities(activities) {
           // (ada di EXCLUDED_NFT_CONTRACTS), skip verifikasi function selector —
           // kita sudah cukup yakin ini LP tanpa perlu cek lagi.
           skipSelectorCheck: isExcludedLpContract,
+          chain,
         });
         continue;
       }
@@ -1034,6 +1119,7 @@ async function processActivities(activities) {
         tokenId,
         mintedTo: toAddress,
         txHash: activity.hash,
+        chain,
       });
       continue;
     }
@@ -1063,42 +1149,57 @@ async function processActivities(activities) {
       fromAddress,
       toAddress,
       txHash: activity.hash,
+      chain,
     });
   }
 }
 
-function handleWebhookRequest(req, res) {
-  if (!isValidSignature(req)) {
-    console.warn("Signature tidak valid, request ditolak.");
-    return res.status(401).send("Invalid signature");
-  }
+/** Bikin handler webhook untuk satu chain. Dibuat sebagai factory supaya tiap
+ * endpoint tahu persis chain-nya (dan otomatis pakai signing key yang benar,
+ * karena tiap webhook Alchemy punya signing key sendiri-sendiri). */
+function makeWebhookHandler(chain) {
+  return function handleWebhookRequest(req, res) {
+    if (!isValidSignature(req, chain)) {
+      console.warn(`Signature tidak valid (chain: ${chain.label}), request ditolak.`);
+      return res.status(401).send("Invalid signature");
+    }
 
-  // Balas 200 secepatnya supaya Alchemy tidak retry / dianggap gagal.
-  res.status(200).send("OK");
+    // Balas 200 secepatnya supaya Alchemy tidak retry / dianggap gagal.
+    res.status(200).send("OK");
 
-  const { event } = req.body;
-  const activities = event?.activity || [];
+    const { event } = req.body;
+    const activities = event?.activity || [];
 
-  if (activities.length === 0) {
-    console.log("⚠️  Tidak ada 'activity' di payload:", JSON.stringify(req.body, null, 2));
-    return;
-  }
+    if (activities.length === 0) {
+      console.log("⚠️  Tidak ada 'activity' di payload:", JSON.stringify(req.body, null, 2));
+      return;
+    }
 
-  processActivities(activities).catch((err) => {
-    console.error("Gagal memproses payload webhook:", err);
-  });
+    processActivities(activities, chain).catch((err) => {
+      console.error(`Gagal memproses payload webhook (chain: ${chain.label}):`, err);
+    });
+  };
 }
 
 // ---------------------------------------------------------------------------
 // ROUTES
 // ---------------------------------------------------------------------------
 
-app.post("/webhook/nft-mint", handleWebhookRequest);
-app.post("/webhook/wallet-activity", handleWebhookRequest);
-app.post("/", handleWebhookRequest); // alias, jaga-jaga URL yang terdaftar di Alchemy adalah root
+// Endpoint LAMA (tanpa prefix chain) -> tetap ke Robinhood, supaya webhook
+// Alchemy yang sudah terdaftar tidak perlu diubah sama sekali.
+app.post("/webhook/nft-mint", makeWebhookHandler(CHAINS.robinhood));
+app.post("/webhook/wallet-activity", makeWebhookHandler(CHAINS.robinhood));
+
+// Endpoint eksplisit per chain. Untuk webhook Alchemy chain ARC, arahkan ke
+// /webhook/arc/wallet-activity (dan /webhook/arc/nft-mint kalau dipisah).
+app.post("/webhook/robinhood/nft-mint", makeWebhookHandler(CHAINS.robinhood));
+app.post("/webhook/robinhood/wallet-activity", makeWebhookHandler(CHAINS.robinhood));
+app.post("/webhook/arc/nft-mint", makeWebhookHandler(CHAINS.arc));
+app.post("/webhook/arc/wallet-activity", makeWebhookHandler(CHAINS.arc));
+app.post("/", makeWebhookHandler(DEFAULT_CHAIN)); // alias root -> chain default (Robinhood)
 
 app.get("/", (req, res) => {
-  res.send("NFT Mint & Wallet Activity Webhook - Robinhood Chain aktif ✅");
+  res.send(`NFT Mint & Wallet Activity Webhook aktif ✅ (chain: ${Object.values(CHAINS).map((c) => c.label).join(", ")})`);
 });
 
 app.get("/health", (req, res) => {
@@ -1157,15 +1258,10 @@ app.post("/admin/bulk-add-wallets", upload.single("file"), async (req, res) => {
     }
   }
 
-  let alchemyResult = { pushed: 0, error: null };
+  // Push ke webhook SEMUA chain (Robinhood + ARC), karena wallets.json dipakai bersama.
+  let alchemyResult = {};
   if (newAddresses.length > 0) {
-    try {
-      const result = await addAddressesToAlchemyWebhook(newAddresses);
-      alchemyResult.pushed = result.pushed;
-    } catch (err) {
-      console.error("Gagal push address ke Alchemy:", err);
-      alchemyResult.error = err.message;
-    }
+    alchemyResult = await addAddressesToAllChains(newAddresses);
   }
 
   res.status(200).json({
