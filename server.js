@@ -96,6 +96,12 @@ const CHAINS = {
     explorerTxBase: process.env.ROBINHOOD_EXPLORER_TX_BASE || "https://robinhoodchain.blockscout.com/tx",
     signingKey: process.env.ALCHEMY_SIGNING_KEY || "",
     webhookId: process.env.ALCHEMY_WEBHOOK_ID || "",
+    // Nilai field "network" yang dikirim Alchemy di body payload webhook
+    // (event.network) — dipakai buat AUTO-DETECT chain dari isi payload,
+    // bukan dari URL endpoint yang dipukul (karena Alchemy TIDAK BISA diubah
+    // URL webhooknya sama sekali, baik lewat dashboard maupun API). Kalau nilai
+    // defaultnya salah, override lewat ROBINHOOD_ALCHEMY_NETWORK di .env.
+    alchemyNetwork: (process.env.ROBINHOOD_ALCHEMY_NETWORK || "ROBINHOOD_MAINNET").toUpperCase(),
     // NFT API Alchemy tersedia di Robinhood Chain.
     nftApiEnabled: process.env.ROBINHOOD_NFT_API_ENABLED !== "false",
     excludedNftContracts: buildExcludedSet(
@@ -111,6 +117,11 @@ const CHAINS = {
     explorerTxBase: process.env.ARC_EXPLORER_TX_BASE || "https://arcscan.app/tx",
     signingKey: process.env.ALCHEMY_SIGNING_KEY_ARC || "",
     webhookId: process.env.ALCHEMY_WEBHOOK_ID_ARC || "",
+    // Sama seperti di atas — dipakai buat auto-detect dari payload. Default
+    // ini TEBAKAN berdasar pola penamaan Alchemy (chain_env), belum
+    // terverifikasi resmi untuk Arc. Kalau salah, override lewat
+    // ARC_ALCHEMY_NETWORK di .env (lihat log server buat tahu nilai aslinya).
+    alchemyNetwork: (process.env.ARC_ALCHEMY_NETWORK || "ARC_MAINNET").toUpperCase(),
     // PENTING: per dokumentasi Alchemy, NFT API BELUM tersedia di Arc (statusnya
     // masih "Request support"). Jadi default-nya dimatikan — nama collection,
     // nama asset, dan gambar NFT tidak akan tampil untuk chain ini (fallback ke
@@ -123,6 +134,38 @@ const CHAINS = {
 
 /** Chain default (dipakai endpoint lama /webhook/... yang tanpa prefix chain). */
 const DEFAULT_CHAIN = CHAINS.robinhood;
+
+// Lookup network (dari payload) -> chain, dibangun sekali dari CHAINS di atas.
+const CHAIN_BY_ALCHEMY_NETWORK = Object.fromEntries(
+  Object.values(CHAINS).map((chain) => [chain.alchemyNetwork, chain])
+);
+
+/** Tentukan chain SEBENARNYA dari isi payload webhook (field event.network),
+ * bukan dari URL endpoint yang dipukul. Ini penting karena Alchemy TIDAK BISA
+ * diubah webhook URL-nya (baik lewat dashboard maupun API) — jadi kalau ada
+ * webhook yang "kepasang" di endpoint yang salah (misal webhook ARC yang masih
+ * mengarah ke /webhook/nft-mint), payload-nya sendiri tetap bisa dipakai buat
+ * tahu ini dari chain mana yang sebenarnya, tanpa perlu URL-nya benar.
+ *
+ * Kalau network di payload tidak dikenali (kosong/tidak cocok satupun di
+ * CHAINS), fallback ke `hintChain` (chain yang "ditebak" dari URL endpoint). */
+function resolveChainFromPayload(reqBody, hintChain) {
+  const network = (reqBody?.event?.network || "").toUpperCase();
+  if (!network) return hintChain;
+
+  const matched = CHAIN_BY_ALCHEMY_NETWORK[network];
+  if (matched) return matched;
+
+  // Network ada tapi tidak match satupun -> kemungkinan besar nilai default
+  // ALCHEMY_NETWORK di .env salah/belum diset sesuai nama asli dari Alchemy.
+  // Log biar gampang ketahuan nilai yang benar itu apa, lalu tetap fallback.
+  console.warn(
+    `⚠️  Network "${network}" dari payload tidak dikenali di CHAINS (fallback ke ${hintChain.label}). ` +
+      `Kalau ini seharusnya chain lain, cek nilai ALCHEMY_NETWORK yang sesuai di .env.`
+  );
+  return hintChain;
+}
+
 
 // Kalau true (default), notifikasi BUY/SELL hanya dikirim jika transaksi tersebut
 // benar-benar ada pembayaran (native value atau transfer token ERC20 seperti
@@ -1029,7 +1072,7 @@ async function handleWalletActivityDetected({
   // dikasih user — title, description (wallet + tag), lalu fields sejajar
   // (NFT/Collection/Chain, From/To), dan link (OpenSea + Tx) di 1 field.
   const linksParts = [`[Tx](${txUrl})`];
-  linksParts.push(`[OpenSea](https://opensea.io/assets/${chain.key}/${contractAddress})`);
+  linksParts.push(`[OpenSea](https://opensea.io/assets/${chain.key}/${entry.contractAddress})`);
 
   const embed = {
     title: isSell ? "NFT TRANSFER OUT" : "NFT TRANSFER IN",
@@ -1157,8 +1200,16 @@ async function processActivities(activities, chain = DEFAULT_CHAIN) {
 /** Bikin handler webhook untuk satu chain. Dibuat sebagai factory supaya tiap
  * endpoint tahu persis chain-nya (dan otomatis pakai signing key yang benar,
  * karena tiap webhook Alchemy punya signing key sendiri-sendiri). */
-function makeWebhookHandler(chain) {
+function makeWebhookHandler(hintChain) {
   return function handleWebhookRequest(req, res) {
+    // PENTING: resolve chain dari ISI PAYLOAD dulu (sebelum cek signature),
+    // karena tiap chain punya signing key SENDIRI — kalau kita validasi pakai
+    // signing key chain yang salah (misal webhook ARC yang nyasar ke endpoint
+    // Robinhood), signature-nya akan SELALU dianggap invalid. Dengan resolve
+    // dari payload duluan, signing key yang dipakai otomatis benar walau
+    // URL webhook-nya "salah" alamat (yang memang tidak bisa diubah di Alchemy).
+    const chain = resolveChainFromPayload(req.body, hintChain);
+
     if (!isValidSignature(req, chain)) {
       console.warn(`Signature tidak valid (chain: ${chain.label}), request ditolak.`);
       return res.status(401).send("Invalid signature");
