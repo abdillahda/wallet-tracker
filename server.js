@@ -949,7 +949,7 @@ async function flushMintBuffer(key) {
   const chain = entry.chain || DEFAULT_CHAIN;
   const txLinks = [...entry.txHashes].map((h) => `${chain.explorerTxBase}/${h}`);
   const openSeaLine = entry.openSeaSlug
-    ? `\nOpenSea : https://opensea.io/collection/${entry.contractAddress}`
+    ? `\nOpenSea : https://opensea.io/assets/${chain.key}/${entry.contractAddress}`
     : "";
 
   let message;
@@ -1072,7 +1072,7 @@ async function handleWalletActivityDetected({
   // dikasih user — title, description (wallet + tag), lalu fields sejajar
   // (NFT/Collection/Chain, From/To), dan link (OpenSea + Tx) di 1 field.
   const linksParts = [`[Tx](${txUrl})`];
-  linksParts.push(`[OpenSea](https://opensea.io/collection/${contractAddress})`);
+  linksParts.push(`[OpenSea](https://opensea.io/assets/${chain.key}/${contractAddress})`);
 
   const embed = {
     title: isSell ? "NFT TRANSFER OUT" : "NFT TRANSFER IN",
@@ -1216,6 +1216,14 @@ function makeWebhookHandler(hintChain) {
     }
 
     // Balas 200 secepatnya supaya Alchemy tidak retry / dianggap gagal.
+    // DEBUG SEMENTARA: log full payload biar bisa lihat semua field/variable
+    // yang dikirim Alchemy (network, activity[].category, dll). Aktifkan
+    // dengan set DEBUG_WEBHOOK_PAYLOAD=true di .env, MATIKAN lagi setelah
+    // selesai debug (log bisa penuh & ada data address wallet di dalamnya).
+    if (process.env.DEBUG_WEBHOOK_PAYLOAD === "true") {
+      console.log(`📦 RAW PAYLOAD (chain hint: ${chain.label}):`, JSON.stringify(req.body, null, 2));
+    }
+
     res.status(200).send("OK");
 
     const { event } = req.body;
@@ -1261,6 +1269,37 @@ app.get("/health", (req, res) => {
 app.post("/admin/reload-wallets", (req, res) => {
   loadWallets();
   res.status(200).json({ total: WATCHED_WALLETS.length });
+});
+
+// DEBUG: cek response mentah NFT API Alchemy langsung dari browser, tanpa perlu
+// curl manual. Contoh: /admin/debug-nft?chain=robinhood&contract=0xabc...&tokenId=1
+app.get("/admin/debug-nft", async (req, res) => {
+  const { chain: chainKey, contract, tokenId } = req.query;
+  const chain = CHAINS[chainKey] || DEFAULT_CHAIN;
+
+  if (!contract || tokenId === undefined) {
+    return res.status(400).json({
+      error: "Wajib isi query param 'contract' dan 'tokenId'.",
+      contoh: "/admin/debug-nft?chain=robinhood&contract=0xabc...&tokenId=1",
+      chainTersedia: Object.keys(CHAINS),
+    });
+  }
+
+  if (!chain.nftApiEnabled) {
+    return res.status(200).json({
+      warning: `NFT API belum diaktifkan untuk chain ${chain.label} (nftApiEnabled: false).`,
+      chain: chain.label,
+    });
+  }
+
+  try {
+    const url = `${chain.nftApiBase}/getNFTMetadata?contractAddress=${contract}&tokenId=${tokenId}`;
+    const apiRes = await fetch(url);
+    const data = await apiRes.json();
+    res.status(200).json({ chain: chain.label, status: apiRes.status, raw: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Bulk-add wallet dari file .txt. Format tiap baris: "0xAddress" atau
