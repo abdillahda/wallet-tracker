@@ -837,7 +837,7 @@ async function fetchNftInfo(contractAddress, tokenId, chain = DEFAULT_CHAIN) {
 
 // Warna default embed Discord (dipakai kalau caller tidak spesifik warna).
 const EMBED_COLOR_DEFAULT = 0x5865f2; // Discord blurple
-const EMBED_COLOR_BUY = 0x2ecc71; // hijau
+const EMBED_COLOR_BUY = 0x0000FF; // hijau
 const EMBED_COLOR_SELL = 0xe74c3c; // merah
 const EMBED_COLOR_MINT = 0xf1c40f; // kuning/emas
 const EMBED_COLOR_INFO = 0x3498db; // biru (summary, info umum)
@@ -1075,7 +1075,7 @@ async function handleWalletActivityDetected({
   linksParts.push(`[OpenSea](https://opensea.io/assets/${chain.key}/${contractAddress})`);
 
   const embed = {
-    title: isSell ? "NFT TRANSFER OUT" : "NFT TRANSFER IN",
+    title: isSell ? "NFT Sell" : "NFT BUY",
     description: watchedLabel,
     color: isSell ? EMBED_COLOR_SELL : EMBED_COLOR_BUY,
     fields: [
