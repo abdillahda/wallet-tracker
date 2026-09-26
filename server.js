@@ -534,25 +534,26 @@ const TAG_EMOJI_MAP = {
 };
 const DEFAULT_TAG_EMOJI = "🏷️"; // fallback buat tag yang tidak ada di TAG_EMOJI_MAP
 
-/** Ambil label tampilan untuk sebuah address: "Nama (0xabcd...wxyz) 🔴 Tag1 🟢 Tag2"
- * kalau ada nama/tag custom, atau alamat penuh kalau tidak ada nama. */
+/** Ambil label tampilan untuk sebuah address: "`Nama (0x1234...abcd)` `KOL` `Whale`"
+ * Address SELALU disingkat (0x1234...abcd), dan seluruh label (nama+address)
+ * maupun tiap tag dibungkus inline-code Discord (backtick) SENDIRI-SENDIRI
+ * sebagai chip terpisah — supaya tidak ada nested-backtick kalau nanti label
+ * ini dipakai di tempat yang templatenya juga pakai backtick. */
 function walletLabel(address) {
   if (!address) return "-";
   const lower = address.toLowerCase();
   const name = WALLET_NAMES[lower];
   const tags = WALLET_TAGS[lower];
 
-  // Tiap tag ditampilkan sebagai "emoji Tag" (emoji berfungsi kayak indikator
-  // warna, karena Discord tidak support teks berwarna custom per kata).
-  const tagBadges =
-    Array.isArray(tags) && tags.length > 0
-      ? " " + tags.map((t) => `${TAG_EMOJI_MAP[t] || DEFAULT_TAG_EMOJI} ${t}`).join(" ")
-      : "";
-
-  if (!name) return `${address}${tagBadges}`;
-
   const shortAddr = `${address.slice(0, 6)}...${address.slice(-4)}`;
-  return `${name} (${shortAddr})${tagBadges}`;
+  const mainChip = name ? `\`${name} (${shortAddr})\`` : `\`${shortAddr}\``;
+
+  // Tiap tag jadi chip inline-code TERPISAH (bukan digabung dalam 1 backtick
+  // yang sama), supaya tetap valid meskipun ada banyak tag sekaligus.
+  const tagChips =
+    Array.isArray(tags) && tags.length > 0 ? " " + tags.map((t) => `\`${t}\``).join(" ") : "";
+
+  return `${mainChip}${tagChips}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -821,8 +822,7 @@ async function fetchNftInfo(contractAddress, tokenId, chain = DEFAULT_CHAIN) {
     const openSeaMeta = data?.contract?.openSeaMetadata;
     const collectionName = openSeaMeta?.collectionName || data?.contract?.name || null;
     const openSeaSlug = openSeaMeta?.collectionSlug || null;
-    const imageUrl =
-      data?.image?.cachedUrl || data?.image?.thumbnailUrl || data?.image?.originalUrl || null;
+    const imageUrl = openSeaMeta?.imageUrl || null;
 
     return { assetName, collectionName, openSeaSlug, imageUrl };
   } catch (err) {
@@ -961,7 +961,7 @@ async function flushMintBuffer(key) {
       `Chain : \`${chain.label}\`\n` +
       `Contract : \`${entry.contractAddress}\`\n` +
       `Asset : \`${entry.tokenIds[0]}\`\n` +
-      `Minted from : \`${mintedFromLabel}\`\n` +
+      `Minted from : ${mintedFromLabel}\n` +
       `Tx : ${txLinks[0]}\n` +
       `Collection : \`${entry.collectionName || "-"}\`` +
       openSeaLine;
@@ -981,7 +981,7 @@ async function flushMintBuffer(key) {
       `Chain : \`${chain.label}\`\n` +
       `Contract : \`${entry.contractAddress}\`\n` +
       `Collection : \`${entry.collectionName || "-"}\`\n` +
-      `Minted from : \`${mintedFromLabel}\`\n` +
+      `Minted from : ${mintedFromLabel}\n` +
       `Total Minted : ${count}\n` +
       `Assets : ${listedTokens}${extra}\n` +
       `Tx : ${txText}` +
