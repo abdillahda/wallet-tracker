@@ -534,11 +534,11 @@ const TAG_EMOJI_MAP = {
 };
 const DEFAULT_TAG_EMOJI = "🏷️"; // fallback buat tag yang tidak ada di TAG_EMOJI_MAP
 
-/** Ambil label tampilan untuk sebuah address: "`Nama (0x1234...abcd)` `KOL` `Whale`"
- * Address SELALU disingkat (0x1234...abcd), dan seluruh label (nama+address)
- * maupun tiap tag dibungkus inline-code Discord (backtick) SENDIRI-SENDIRI
- * sebagai chip terpisah — supaya tidak ada nested-backtick kalau nanti label
- * ini dipakai di tempat yang templatenya juga pakai backtick. */
+/** Ambil label LENGKAP untuk sebuah address: "Nama (0x1234...abcd) `🔴 Tag1` `🟢 Tag2`"
+ * Nama+address TIDAK dibungkus inline-code (plain text), tapi tiap tag dibungkus
+ * inline-code TERPISAH beserta emoji warnanya (dari TAG_EMOJI_MAP). Dipakai di
+ * description/body notif (BUKAN di field From/To yang cuma mau address polos —
+ * untuk itu pakai walletAddressOnly()). */
 function walletLabel(address) {
   if (!address) return "-";
   const lower = address.toLowerCase();
@@ -546,14 +546,24 @@ function walletLabel(address) {
   const tags = WALLET_TAGS[lower];
 
   const shortAddr = `${address.slice(0, 6)}...${address.slice(-4)}`;
-  const mainChip = name ? `\`${name} (${shortAddr})\`` : `\`${shortAddr}\``;
+  const mainText = name ? `${name} (${shortAddr})` : shortAddr;
 
-  // Tiap tag jadi chip inline-code TERPISAH (bukan digabung dalam 1 backtick
-  // yang sama), supaya tetap valid meskipun ada banyak tag sekaligus.
+  // Tiap tag: emoji (indikator warna) + teks, dibungkus 1 chip inline-code SENDIRI.
   const tagChips =
-    Array.isArray(tags) && tags.length > 0 ? " " + tags.map((t) => `\`${t}\``).join(" ") : "";
+    Array.isArray(tags) && tags.length > 0
+      ? " " + tags.map((t) => `\`${TAG_EMOJI_MAP[t] || DEFAULT_TAG_EMOJI} ${t}\``).join(" ")
+      : "";
 
-  return `${mainChip}${tagChips}`;
+  return `${mainText}${tagChips}`;
+}
+
+/** Ambil address SAJA (disingkat, tanpa nama, tanpa tag), dibungkus inline-code:
+ * "`0x1234...abcd`". Khusus dipakai di field From/To — supaya field itu murni
+ * menampilkan address, tidak ikut nama/tag walletnya. */
+function walletAddressOnly(address) {
+  if (!address) return "-";
+  const shortAddr = `${address.slice(0, 6)}...${address.slice(-4)}`;
+  return `\`${shortAddr}\``;
 }
 
 // ---------------------------------------------------------------------------
@@ -802,11 +812,11 @@ async function fetchNftInfo(contractAddress, tokenId, chain = DEFAULT_CHAIN) {
   // langsung return kosong supaya tidak buang-buang request ke endpoint yang
   // pasti gagal. Notifikasi tetap jalan, cuma tanpa nama collection/asset/gambar.
   if (!chain.nftApiEnabled) {
-    return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null };
+    return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null, mintUrl: null };
   }
 
   if (!ALCHEMY_API_KEY || !contractAddress || tokenId === undefined) {
-    return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null };
+    return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null, mintUrl: null };
   }
 
   try {
@@ -814,7 +824,7 @@ async function fetchNftInfo(contractAddress, tokenId, chain = DEFAULT_CHAIN) {
     const res = await fetch(url);
     if (!res.ok) {
       console.warn(`⚠️  NFT API respon ${res.status} untuk ${contractAddress} #${tokenId}`);
-      return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null };
+      return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null, mintUrl: null };
     }
     const data = await res.json();
 
@@ -823,11 +833,14 @@ async function fetchNftInfo(contractAddress, tokenId, chain = DEFAULT_CHAIN) {
     const collectionName = openSeaMeta?.collectionName || data?.contract?.name || null;
     const openSeaSlug = openSeaMeta?.collectionSlug || null;
     const imageUrl = openSeaMeta?.imageUrl || null;
+    // Link situs resmi project (kadang memang halaman mint-nya langsung, kadang
+    // cuma landing page). Tidak semua collection mengisi field ini di metadata.
+    const mintUrl = openSeaMeta?.externalUrl || null;
 
-    return { assetName, collectionName, openSeaSlug, imageUrl };
+    return { assetName, collectionName, openSeaSlug, imageUrl, mintUrl };
   } catch (err) {
     console.warn("⚠️  Gagal fetch NFT metadata:", err.message);
-    return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null };
+    return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null, mintUrl: null };
   }
 }
 
@@ -900,7 +913,7 @@ async function sendDiscordEmbed(embed, webhookUrl = DISCORD_WEBHOOK_URL) {
 
 
 async function handleMintDetected({ contractAddress, tokenId, mintedTo, txHash, chain = DEFAULT_CHAIN }) {
-  const { assetName, collectionName, openSeaSlug } = await fetchNftInfo(contractAddress, tokenId, chain);
+  const { assetName, collectionName, openSeaSlug, mintUrl } = await fetchNftInfo(contractAddress, tokenId, chain);
 
   console.log("🎨 MINT TERDETEKSI (masuk buffer)");
   console.log(`   Contract     : ${contractAddress}`);
@@ -920,6 +933,7 @@ async function handleMintDetected({ contractAddress, tokenId, mintedTo, txHash, 
       mintedTo,
       collectionName,
       openSeaSlug,
+      mintUrl,
       chain,
       tokenIds: [],
       txHashes: new Set(),
@@ -951,6 +965,9 @@ async function flushMintBuffer(key) {
   const openSeaLine = entry.openSeaSlug
     ? `\nOpenSea : https://opensea.io/assets/${chain.key}/${entry.contractAddress}`
     : "";
+  // Link situs resmi/mint project — cuma tampil kalau memang ada di metadata
+  // (tidak semua collection mengisi field externalUrl).
+  const mintUrlLine = entry.mintUrl ? `\nLink Mint : ${entry.mintUrl}` : "";
 
   let message;
 
@@ -964,7 +981,8 @@ async function flushMintBuffer(key) {
       `Minted from : ${mintedFromLabel}\n` +
       `Tx : ${txLinks[0]}\n` +
       `Collection : \`${entry.collectionName || "-"}\`` +
-      openSeaLine;
+      openSeaLine +
+      mintUrlLine;
   } else {
     // Lebih dari 1 mint beruntun -> gabung jadi ringkasan
     const MAX_LISTED = 15;
@@ -985,7 +1003,8 @@ async function flushMintBuffer(key) {
       `Total Minted : ${count}\n` +
       `Assets : ${listedTokens}${extra}\n` +
       `Tx : ${txText}` +
-      openSeaLine;
+      openSeaLine +
+      mintUrlLine;
   }
 
   console.log(`📬 Mengirim ringkasan mint (${count}x) untuk key ${key}`);
@@ -1082,8 +1101,8 @@ async function handleWalletActivityDetected({
       { name: "NFT", value: asset, inline: true },
       { name: "Collection", value: collectionName || "-", inline: true },
       { name: "Chain", value: chain.label, inline: true },
-      { name: "From", value: walletLabel(fromAddress), inline: true },
-      { name: "To", value: walletLabel(toAddress), inline: true },
+      { name: "From", value: walletAddressOnly(fromAddress), inline: true },
+      { name: "To", value: walletAddressOnly(toAddress), inline: true },
       { name: "\u200b", value: "\u200b", inline: true }, // spacer biar grid tetap 3 kolom rapi
       { name: "Links", value: linksParts.join(" · "), inline: false },
     ],
