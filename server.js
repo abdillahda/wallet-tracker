@@ -812,11 +812,11 @@ async function fetchNftInfo(contractAddress, tokenId, chain = DEFAULT_CHAIN) {
   // langsung return kosong supaya tidak buang-buang request ke endpoint yang
   // pasti gagal. Notifikasi tetap jalan, cuma tanpa nama collection/asset/gambar.
   if (!chain.nftApiEnabled) {
-    return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null, mintUrl: null };
+    return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null };
   }
 
   if (!ALCHEMY_API_KEY || !contractAddress || tokenId === undefined) {
-    return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null, mintUrl: null };
+    return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null };
   }
 
   try {
@@ -824,7 +824,7 @@ async function fetchNftInfo(contractAddress, tokenId, chain = DEFAULT_CHAIN) {
     const res = await fetch(url);
     if (!res.ok) {
       console.warn(`⚠️  NFT API respon ${res.status} untuk ${contractAddress} #${tokenId}`);
-      return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null, mintUrl: null };
+      return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null };
     }
     const data = await res.json();
 
@@ -833,14 +833,11 @@ async function fetchNftInfo(contractAddress, tokenId, chain = DEFAULT_CHAIN) {
     const collectionName = openSeaMeta?.collectionName || data?.contract?.name || null;
     const openSeaSlug = openSeaMeta?.collectionSlug || null;
     const imageUrl = openSeaMeta?.imageUrl || null;
-    // Link situs resmi project (kadang memang halaman mint-nya langsung, kadang
-    // cuma landing page). Tidak semua collection mengisi field ini di metadata.
-    const mintUrl = openSeaMeta?.externalUrl || null;
 
-    return { assetName, collectionName, openSeaSlug, imageUrl, mintUrl };
+    return { assetName, collectionName, openSeaSlug, imageUrl };
   } catch (err) {
     console.warn("⚠️  Gagal fetch NFT metadata:", err.message);
-    return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null, mintUrl: null };
+    return { assetName: null, collectionName: null, openSeaSlug: null, imageUrl: null };
   }
 }
 
@@ -913,7 +910,7 @@ async function sendDiscordEmbed(embed, webhookUrl = DISCORD_WEBHOOK_URL) {
 
 
 async function handleMintDetected({ contractAddress, tokenId, mintedTo, txHash, chain = DEFAULT_CHAIN }) {
-  const { assetName, collectionName, openSeaSlug, mintUrl } = await fetchNftInfo(contractAddress, tokenId, chain);
+  const { assetName, collectionName, openSeaSlug, imageUrl } = await fetchNftInfo(contractAddress, tokenId, chain);
 
   console.log("🎨 MINT TERDETEKSI (masuk buffer)");
   console.log(`   Contract     : ${contractAddress}`);
@@ -933,7 +930,7 @@ async function handleMintDetected({ contractAddress, tokenId, mintedTo, txHash, 
       mintedTo,
       collectionName,
       openSeaSlug,
-      mintUrl,
+      imageUrl,
       chain,
       tokenIds: [],
       txHashes: new Set(),
@@ -962,53 +959,48 @@ async function flushMintBuffer(key) {
   const count = entry.tokenIds.length;
   const chain = entry.chain || DEFAULT_CHAIN;
   const txLinks = [...entry.txHashes].map((h) => `${chain.explorerTxBase}/${h}`);
-  const openSeaLine = entry.openSeaSlug
-    ? `\nOpenSea : https://opensea.io/assets/${chain.key}/${entry.contractAddress}`
-    : "";
-  // Link situs resmi/mint project — cuma tampil kalau memang ada di metadata
-  // (tidak semua collection mengisi field externalUrl).
-  const mintUrlLine = entry.mintUrl ? `\nLink Mint : ${entry.mintUrl}` : "";
 
-  let message;
+  const linksParts = [];
+  if (count === 1) {
+    linksParts.push(`[Tx](${txLinks[0]})`);
+  } else {
+    txLinks.forEach((l, i) => linksParts.push(`[Tx ${i + 1}](${l})`));
+  }
+  if (entry.openSeaSlug) {
+    linksParts.push(`[OpenSea](https://opensea.io/assets/${chain.key}/${entry.contractAddress})`);
+  }
+
+  const fields = [
+    { name: "Contract", value: `\`${entry.contractAddress}\``, inline: true },
+    { name: "Collection", value: `\`${entry.collectionName || "-"}\``, inline: true },
+    { name: "Chain", value: `\`${chain.label}\``, inline: true },
+  ];
 
   if (count === 1) {
-    // Cuma 1 mint -> format seperti biasa
-    message =
-      `🎨 **Mint baru terdeteksi!**\n` +
-      `Chain : \`${chain.label}\`\n` +
-      `Contract : \`${entry.contractAddress}\`\n` +
-      `Asset : \`${entry.tokenIds[0]}\`\n` +
-      `Minted from : ${mintedFromLabel}\n` +
-      `Tx : ${txLinks[0]}\n` +
-      `Collection : \`${entry.collectionName || "-"}\`` +
-      openSeaLine +
-      mintUrlLine;
+    fields.push({ name: "Asset", value: `\`${entry.tokenIds[0]}\``, inline: true });
   } else {
-    // Lebih dari 1 mint beruntun -> gabung jadi ringkasan
     const MAX_LISTED = 15;
     const listedTokens = entry.tokenIds.slice(0, MAX_LISTED).join(", ");
     const extra = count > MAX_LISTED ? ` (+${count - MAX_LISTED} lagi)` : "";
+    fields.push({ name: "Total Minted", value: `\`${count}\``, inline: true });
+    fields.push({ name: "Assets", value: `\`${listedTokens}${extra}\``, inline: false });
+  }
 
-    const txText =
-      txLinks.length === 1
-        ? txLinks[0]
-        : txLinks.map((l, i) => `[Tx ${i + 1}](${l})`).join(", ");
+  fields.push({ name: "Links", value: linksParts.join(" · "), inline: false });
 
-    message =
-      `🎨 **${count}x Mint baru terdeteksi!**\n` +
-      `Chain : \`${chain.label}\`\n` +
-      `Contract : \`${entry.contractAddress}\`\n` +
-      `Collection : \`${entry.collectionName || "-"}\`\n` +
-      `Minted from : ${mintedFromLabel}\n` +
-      `Total Minted : ${count}\n` +
-      `Assets : ${listedTokens}${extra}\n` +
-      `Tx : ${txText}` +
-      openSeaLine +
-      mintUrlLine;
+  const embed = {
+    title: count === 1 ? "🎨 Mint Baru Terdeteksi!" : `🎨 ${count}x Mint Baru Terdeteksi!`,
+    description: mintedFromLabel,
+    color: EMBED_COLOR_MINT,
+    fields,
+  };
+
+  if (entry.imageUrl) {
+    embed.thumbnail = { url: entry.imageUrl };
   }
 
   console.log(`📬 Mengirim ringkasan mint (${count}x) untuk key ${key}`);
-  await sendDiscordMessage(message, DISCORD_WEBHOOK_URL, EMBED_COLOR_MINT);
+  await sendDiscordEmbed(embed, DISCORD_WEBHOOK_URL);
 }
 
 async function handleWalletActivityDetected({
